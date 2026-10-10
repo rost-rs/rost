@@ -331,4 +331,77 @@ fn test_multi_file_scaling_central_watcher() {
     let _ = fs::remove_file(file2);
 }
 
+#[test]
+fn test_nested_blocks_and_list_enum_queries() {
+    let doc = r#"
+    #profile {
+        name: "Alex 'Shadow'",
+        role: "Assasin",
+        level: 42,
+        accent_color: #cba6f7,
+        status | online, in_combat, idle |
+    }
+
+    #stats {
+        hp: 85,
+        max_hp: 200,
+        energy: 60,
+        shield: 75
+    }
+
+    #inventory {
+        items [ "Katana Neón", "Nano-Botiquín", "Bomba de Humo", "Tarjeta Cifrada" ]
+    }
+
+    #background {
+        color: #181825,
+    }
+
+    #card {
+        color: #1e1e2e,
+        #avatar {
+            text_color: #11111b,
+            text: "AV",
+        }
+    }
+    "#;
+
+    let template = Template::from_str(doc);
+
+    // Test List queries
+    let items = template.query_list("inventory.items").expect("inventory.items");
+    assert_eq!(items.len(), 4);
+    assert_eq!(items[0], "Katana Neón");
+    assert_eq!(items[1], "Nano-Botiquín");
+    assert_eq!(template.query_list_item("inventory.items", 0), Some("Katana Neón"));
+    assert_eq!(template.query_list_item("inventory.items", 3), Some("Tarjeta Cifrada"));
+    assert_eq!(template.query_list_item("inventory.items", 4), None);
+
+    // Test Enum queries
+    let statuses = template.query_enum("profile.status").expect("profile.status");
+    assert_eq!(statuses.len(), 3);
+    assert_eq!(statuses[0], "online");
+    assert_eq!(statuses[1], "in_combat");
+    assert_eq!(statuses[2], "idle");
+    assert_eq!(template.query_enum_variant("profile.status", 0), Some("online"));
+    assert_eq!(template.query_enum_variant("profile.status", 1), Some("in_combat"));
+    assert_eq!(template.query_enum_variant("profile.status", 5), None);
+
+    // Test Nested Blocks
+    assert_eq!(template.query_hex("background.color"), Some(0x181825));
+    assert_eq!(template.query_hex("card.color"), Some(0x1e1e2e));
+    assert_eq!(template.query_hex("card.avatar.text_color"), Some(0x11111b));
+    assert_eq!(template.query_str("card.avatar.text"), Some("AV"));
+    // Direct block lookups
+    let avatar_block = template.find_block("avatar").expect("find avatar");
+    assert_eq!(avatar_block.get_str("text"), Some("AV"));
+    assert_eq!(avatar_block.parent, Some("card"));
+
+    // BlockView list & enum methods
+    let inv_block = template.find_block("inventory").expect("find inventory");
+    assert_eq!(inv_block.get_list_item("items", 1), Some("Nano-Botiquín"));
+    let prof_block = template.find_block("profile").expect("find profile");
+    assert_eq!(prof_block.get_enum_variant("status", 0), Some("online"));
+}
+
 
