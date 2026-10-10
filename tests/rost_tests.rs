@@ -404,4 +404,72 @@ fn test_nested_blocks_and_list_enum_queries() {
     assert_eq!(prof_block.get_enum_variant("status", 0), Some("online"));
 }
 
+#[test]
+fn test_dynamic_rost_objects_mapping() {
+    let doc = r#"
+    #car {
+        color: #ff0000,
+        speed: 320kmh,
+        active: true
+    }
+    #wheel {
+        size: 18px,
+        rim: #ffffff
+    }
+    "#;
+
+    let tmpl = Template::from_str(doc);
+    let objs = tmpl.map_objs();
+    assert_eq!(objs.len(), 2);
+    assert_eq!(objs[0].name, "car");
+    assert_eq!(objs[0].hex("color"), Some(0xff0000));
+    assert_eq!(objs[0].dim("speed"), Some(320.0));
+    assert_eq!(objs[0].bool("active"), Some(true));
+
+    let wheel = tmpl.to_obj("wheel").expect("wheel");
+    assert_eq!(wheel.dim("size"), Some(18.0));
+    assert_eq!(wheel.hex("rim"), Some(0xffffff));
+}
+
+#[test]
+fn test_rost_schema_auto_field_naming_and_tail() {
+    use rost::rost_schema;
+
+    let doc = r#"
+    primary_color: #785d96
+    speed: 120px
+    "#;
+
+    rost_schema! {
+        struct AutoConfig {
+            "primary_color" => clr: hex = 0x000000,
+            speed: dim = 0.0,
+            ..template
+        }
+    }
+
+    let tmpl = Template::from_str(doc);
+    let cfg = AutoConfig::from_template(&tmpl);
+    assert_eq!(cfg.clr, 0x785d96);
+    assert_eq!(cfg.speed, 120.0);
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn test_serde_deserialization() {
+    use serde::Deserialize;
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct CarPart {
+        color: u32,
+        speed: f32,
+    }
+
+    let doc = "#car { color: #ff0000, speed: 200px }";
+    let tmpl = Template::from_str(doc);
+    let part: CarPart = tmpl.deserialize("car").expect("deserialize car");
+    assert_eq!(part.color, 0xff0000);
+    assert_eq!(part.speed, 200.0);
+}
+
 
