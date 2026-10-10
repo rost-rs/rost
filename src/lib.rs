@@ -88,13 +88,17 @@ pub mod field;
 pub mod malleable;
 pub mod parser;
 pub mod query;
+pub mod schema;
+pub mod watcher;
 
 pub use field::{Dimension, ParsedField};
 pub use malleable::{MalleablePatcher, RostBuilder};
 pub use query::{parse_blocks, BlockView, FieldIter};
+pub use watcher::{HotReloadWatcher, ReloadCallback};
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// The primary parsed representation of a `.rost` document.
 ///
@@ -107,6 +111,8 @@ pub struct Template {
     pub data: Vec<u8>,
     /// Compact bytecode array storing tags and Little-Endian `u32` offsets into `data`.
     pub fields: Vec<u8>,
+    /// Native zero-CPU filesystem watcher if hot-reloading was enabled.
+    pub(crate) watcher: Option<Arc<HotReloadWatcher>>,
 }
 
 impl Template {
@@ -118,19 +124,40 @@ impl Template {
     /// Does not panic; falls back to an empty template if the file cannot be read.
     pub fn dump(path: PathBuf) -> Self {
         let (data, fields) = Self::reader(&path);
-        Self { path, data, fields }
+        Self {
+            path,
+            data,
+            fields,
+            watcher: None,
+        }
     }
 
-    /// Loads and parses a `.rost` document from disk, returning an explicit [`std::io::Result`].
-    pub fn from_file<P: AsRef<Path>>(path: P) -> std::io::Result<Self> {
+    /// Loads a `.rost` document from disk with hot-reloading enabled by default (`hot_reload = true`).
+    pub fn load<P: AsRef<Path>>(path: P) -> std::io::Result<Self> {
+        Self::load_with_options(path, true)
+    }
+
+    /// Loads a `.rost` document from disk, allowing explicit control over hot-reloading.
+    pub fn load_with_options<P: AsRef<Path>>(path: P, hot_reload: bool) -> std::io::Result<Self> {
         let p = path.as_ref();
         let data = fs::read(p)?;
         let fields = parser::parse_into_bytecode(&data);
+        let watcher = if hot_reload {
+            HotReloadWatcher::new(p).ok()
+        } else {
+            None
+        };
         Ok(Self {
             path: p.to_path_buf(),
             data,
             fields,
+            watcher,
         })
+    }
+
+    /// Loads and parses a `.rost` document from disk (with hot-reloading enabled by default).
+    pub fn from_file<P: AsRef<Path>>(path: P) -> std::io::Result<Self> {
+        Self::load(path)
     }
 
     /// Creates and parses a [`Template`] from an in-memory byte buffer.
@@ -140,6 +167,7 @@ impl Template {
             path: PathBuf::new(),
             data,
             fields,
+            watcher: None,
         }
     }
 
@@ -222,6 +250,106 @@ impl Template {
     #[inline]
     pub fn as_str(&self) -> &str {
         std::str::from_utf8(&self.data).unwrap_or("")
+    }
+
+    /// Checks if hot-reloading is currently active for this template.
+    pub fn is_hot_reload_enabled(&self) -> bool {
+        self.watcher.is_some()
+    }
+
+    /// Registers a callback closure to run on a background thread whenever the file updates.
+    pub fn on_reload<F>(&self, cb: F)
+    where
+        F: Fn(Template) + Send + Sync + 'static,
+    {
+        if let Some(w) = &self.watcher {
+            w.on_reload(cb);
+        }
+    }
+
+    /// Subscribes to document updates via a channel receiver.
+    pub fn subscribe(&self) -> Option<std::sync::mpsc::Receiver<Template>> {
+        self.watcher.as_ref().map(|w| w.subscribe())
+    }
+
+    /// Checks if the template has been updated on disk. If so, updates this template in-place and returns `true`.
+    pub fn check_reload(&mut self) -> bool {
+        if let Some(w) = &self.watcher {
+            if let Some(new_tmpl) = w.check_reload() {
+                self.data = new_tmpl.data;
+                self.fields = new_tmpl.fields;
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Queries a field across scoped blocks using dot-notation (e.g. `"palette.bg_window"` or `"title"`).
+    pub fn query_field(&self, path: &str) -> Option<ParsedField<'_>> {
+        if let Some((block_sel, key)) = path.split_once('.') {
+            self.find_block(block_sel).and_then(|b| b.get(key).cloned())
+        } else {
+            self.get(path)
+        }
+    }
+
+    /// Queries a hex color (`u32`) using dot-notation or top-level key.
+    pub fn query_hex(&self, path: &str) -> Option<u32> {
+        if let Some((block_sel, key)) = path.split_once('.') {
+            self.find_block(block_sel).and_then(|b| b.get_hex(key))
+        } else {
+            self.get(path).and_then(|f| f.as_hex_color())
+        }
+    }
+
+    /// Queries a dimension/float (`f32`) using dot-notation or top-level key.
+    pub fn query_dim(&self, path: &str) -> Option<f32> {
+        if let Some((block_sel, key)) = path.split_once('.') {
+            self.find_block(block_sel).and_then(|b| b.get_dim(key))
+        } else {
+            self.get(path)
+                .and_then(|f| f.as_dimension())
+                .map(|d| d.value as f32)
+        }
+    }
+
+    /// Queries a string slice using dot-notation or top-level key.
+    pub fn query_str(&self, path: &str) -> Option<&str> {
+        if let Some((block_sel, key)) = path.split_once('.') {
+            self.find_block(block_sel).and_then(|b| b.get_str(key))
+        } else {
+            self.get(path)
+                .and_then(|f| f.value())
+                .map(str::trim)
+                .map(|s| s.trim_matches('"'))
+        }
+    }
+
+    /// Queries an integer (`i64`) using dot-notation or top-level key.
+    pub fn query_i64(&self, path: &str) -> Option<i64> {
+        if let Some((block_sel, key)) = path.split_once('.') {
+            self.find_block(block_sel).and_then(|b| b.get_i64(key))
+        } else {
+            self.get(path).and_then(|f| f.as_i64())
+        }
+    }
+
+    /// Queries a float (`f64`) using dot-notation or top-level key.
+    pub fn query_f64(&self, path: &str) -> Option<f64> {
+        if let Some((block_sel, key)) = path.split_once('.') {
+            self.find_block(block_sel).and_then(|b| b.get_f64(key))
+        } else {
+            self.get(path).and_then(|f| f.as_f64())
+        }
+    }
+
+    /// Queries a boolean using dot-notation or top-level key.
+    pub fn query_bool(&self, path: &str) -> Option<bool> {
+        if let Some((block_sel, key)) = path.split_once('.') {
+            self.find_block(block_sel).and_then(|b| b.get_bool(key))
+        } else {
+            self.get(path).and_then(|f| f.as_bool())
+        }
     }
 
     /// Saves the current template buffer back to disk.

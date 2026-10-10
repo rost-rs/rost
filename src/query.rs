@@ -138,6 +138,41 @@ impl<'a> BlockView<'a> {
     pub fn get_value(&self, key: &str) -> Option<&'a str> {
         self.get(key).and_then(|f| f.value())
     }
+
+    /// Retrieves and parses a property as a hex color (`u32`).
+    pub fn get_hex(&self, key: &str) -> Option<u32> {
+        self.get(key).and_then(|f| f.as_hex_color())
+    }
+
+    /// Retrieves and parses a property as a dimension/scalar float (`f32`).
+    pub fn get_dim(&self, key: &str) -> Option<f32> {
+        self.get(key)
+            .and_then(|f| f.as_dimension())
+            .map(|d| d.value as f32)
+    }
+
+    /// Retrieves and trims a property as a string slice without quotes.
+    pub fn get_str(&self, key: &str) -> Option<&'a str> {
+        self.get(key)
+            .and_then(|f| f.value())
+            .map(str::trim)
+            .map(|s| s.trim_matches('"'))
+    }
+
+    /// Retrieves and parses a property as a 64-bit signed integer.
+    pub fn get_i64(&self, key: &str) -> Option<i64> {
+        self.get(key).and_then(|f| f.as_i64())
+    }
+
+    /// Retrieves and parses a property as a 64-bit float.
+    pub fn get_f64(&self, key: &str) -> Option<f64> {
+        self.get(key).and_then(|f| f.as_f64())
+    }
+
+    /// Retrieves and parses a property as a boolean.
+    pub fn get_bool(&self, key: &str) -> Option<bool> {
+        self.get(key).and_then(|f| f.as_bool())
+    }
 }
 
 /// Extracts all top-level and nested scoped blocks from a `.rost` document.
