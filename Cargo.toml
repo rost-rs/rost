@@ -1,0 +1,11 @@
+[package]
+name = "rost"
+version = "0.1.0"
+edition = "2024"
+authors = ["The Rost Project Contributors"]
+description = "Blazing-fast zero-copy document parser, indexer, and malleable engine for the .rost format"
+license = "MIT"
+repository = "https://github.com/rost-rs/rost"
+
+[dependencies]
+memchr = "2.8.3"
