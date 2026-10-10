@@ -122,6 +122,8 @@ impl<'a> Iterator for FieldIter<'a> {
 pub struct BlockView<'a> {
     /// Selector or identifier of the block.
     pub name: &'a str,
+    /// Parent block name if this is a nested block scope.
+    pub parent: Option<&'a str>,
     /// Starting line of the block.
     pub line: u32,
     /// Fields contained inside this block scope.
@@ -181,40 +183,65 @@ impl<'a> BlockView<'a> {
             _ => None,
         })
     }
+
+    /// Retrieves all items from a list field in this scoped block.
+    pub fn get_list(&self, key: &str) -> Option<Vec<&'a str>> {
+        self.get(key).and_then(|f| match f {
+            ParsedField::List { .. } => Some(f.list_items()),
+            _ => None,
+        })
+    }
+
+    /// Retrieves the n-th element (0-indexed) from a list field in this scoped block.
+    pub fn get_list_item(&self, key: &str, index: usize) -> Option<&'a str> {
+        self.get(key).and_then(|f| f.list_item(index))
+    }
+
+    /// Retrieves all variants from an enum field in this scoped block.
+    pub fn get_enum(&self, key: &str) -> Option<Vec<&'a str>> {
+        self.get(key).and_then(|f| match f {
+            ParsedField::Enum { .. } => Some(f.enum_variants()),
+            _ => None,
+        })
+    }
+
+    /// Retrieves the n-th variant (0-indexed) from an enum field in this scoped block.
+    pub fn get_enum_variant(&self, key: &str, index: usize) -> Option<&'a str> {
+        self.get(key).and_then(|f| f.enum_variant(index))
+    }
 }
 
 /// Extracts all top-level and nested scoped blocks from a `.rost` document.
 pub fn parse_blocks<'a>(data: &'a [u8], fields: &'a [u8]) -> Vec<BlockView<'a>> {
     let mut blocks = Vec::new();
     let iter = FieldIter::new(data, fields);
-    let mut current_block: Option<BlockView<'a>> = None;
+    let mut stack: Vec<BlockView<'a>> = Vec::new();
 
     for field in iter {
         match field {
             ParsedField::BlockStart { name, line } => {
-                if let Some(prev) = current_block.take() {
-                    blocks.push(prev);
-                }
-                current_block = Some(BlockView {
+                let parent = stack.last().map(|p| p.name);
+                stack.push(BlockView {
                     name,
+                    parent,
                     line,
                     fields: Vec::new(),
                 });
             }
             ParsedField::BlockEnd { .. } => {
-                if let Some(b) = current_block.take() {
+                if let Some(b) = stack.pop() {
                     blocks.push(b);
                 }
             }
             other => {
-                if let Some(ref mut b) = current_block {
-                    b.fields.push(other);
+                if let Some(top) = stack.last_mut() {
+                    top.fields.push(other);
                 }
             }
         }
     }
 
-    if let Some(b) = current_block {
+    while let Some(b) = stack.pop() {
         blocks.push(b);
     }
 

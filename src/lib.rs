@@ -230,12 +230,38 @@ impl Template {
         parse_blocks(&self.data, &self.fields)
     }
 
-    /// Finds a specific block by its selector or name (e.g., `#button.primary`).
+    /// Finds a specific block by its selector or name (e.g., `#button.primary` or `avatar`).
     pub fn find_block(&self, selector: &str) -> Option<BlockView<'_>> {
         let clean = selector.strip_prefix('#').unwrap_or(selector);
-        self.blocks()
-            .into_iter()
-            .find(|b| b.name == selector || b.name == clean)
+        self.blocks().into_iter().find(|b| {
+            if b.name == selector || b.name == clean {
+                return true;
+            }
+            if let Some(parent) = b.parent {
+                if format!("{}.{}", parent, b.name) == clean
+                    || format!("#{}.#{}", parent, b.name) == selector
+                    || format!("{}.{}", parent, b.name) == selector
+                {
+                    return true;
+                }
+            }
+            false
+        })
+    }
+
+    /// Internal helper to resolve a dot-path into a [BlockView] and property key.
+    fn resolve_block_and_key<'p>(&self, path: &'p str) -> Option<(BlockView<'_>, &'p str)> {
+        if let Some((block_sel, key)) = path.rsplit_once('.') {
+            if let Some(b) = self.find_block(block_sel) {
+                return Some((b, key));
+            }
+            if let Some((_, sub_sel)) = block_sel.rsplit_once('.') {
+                if let Some(b) = self.find_block(sub_sel) {
+                    return Some((b, key));
+                }
+            }
+        }
+        None
     }
 
     /// Patches an existing property in-place ("maleador").
@@ -286,8 +312,8 @@ impl Template {
 
     /// Queries a field across scoped blocks using dot-notation (e.g. `"palette.bg_window"` or `"title"`).
     pub fn query_field(&self, path: &str) -> Option<ParsedField<'_>> {
-        if let Some((block_sel, key)) = path.split_once('.') {
-            self.find_block(block_sel).and_then(|b| b.get(key).cloned())
+        if let Some((b, key)) = self.resolve_block_and_key(path) {
+            b.get(key).cloned()
         } else {
             self.get(path)
         }
@@ -295,8 +321,8 @@ impl Template {
 
     /// Queries a hex color (`u32`) using dot-notation or top-level key.
     pub fn query_hex(&self, path: &str) -> Option<u32> {
-        if let Some((block_sel, key)) = path.split_once('.') {
-            self.find_block(block_sel).and_then(|b| b.get_hex(key))
+        if let Some((b, key)) = self.resolve_block_and_key(path) {
+            b.get_hex(key)
         } else {
             self.get(path).and_then(|f| f.as_hex_color())
         }
@@ -304,8 +330,8 @@ impl Template {
 
     /// Queries a dimension/float (`f32`) using dot-notation or top-level key.
     pub fn query_dim(&self, path: &str) -> Option<f32> {
-        if let Some((block_sel, key)) = path.split_once('.') {
-            self.find_block(block_sel).and_then(|b| b.get_dim(key))
+        if let Some((b, key)) = self.resolve_block_and_key(path) {
+            b.get_dim(key)
         } else {
             self.get(path)
                 .and_then(|f| f.as_dimension())
@@ -315,8 +341,8 @@ impl Template {
 
     /// Queries a string slice using dot-notation or top-level key.
     pub fn query_str(&self, path: &str) -> Option<&str> {
-        if let Some((block_sel, key)) = path.split_once('.') {
-            self.find_block(block_sel).and_then(|b| b.get_str(key))
+        if let Some((b, key)) = self.resolve_block_and_key(path) {
+            b.get_str(key)
         } else {
             self.get(path)
                 .and_then(|f| f.value())
@@ -327,8 +353,8 @@ impl Template {
 
     /// Queries an integer (`i64`) using dot-notation or top-level key.
     pub fn query_i64(&self, path: &str) -> Option<i64> {
-        if let Some((block_sel, key)) = path.split_once('.') {
-            self.find_block(block_sel).and_then(|b| b.get_i64(key))
+        if let Some((b, key)) = self.resolve_block_and_key(path) {
+            b.get_i64(key)
         } else {
             self.get(path).and_then(|f| f.as_i64())
         }
@@ -336,8 +362,8 @@ impl Template {
 
     /// Queries a float (`f64`) using dot-notation or top-level key.
     pub fn query_f64(&self, path: &str) -> Option<f64> {
-        if let Some((block_sel, key)) = path.split_once('.') {
-            self.find_block(block_sel).and_then(|b| b.get_f64(key))
+        if let Some((b, key)) = self.resolve_block_and_key(path) {
+            b.get_f64(key)
         } else {
             self.get(path).and_then(|f| f.as_f64())
         }
@@ -345,8 +371,8 @@ impl Template {
 
     /// Queries a boolean using dot-notation or top-level key.
     pub fn query_bool(&self, path: &str) -> Option<bool> {
-        if let Some((block_sel, key)) = path.split_once('.') {
-            self.find_block(block_sel).and_then(|b| b.get_bool(key))
+        if let Some((b, key)) = self.resolve_block_and_key(path) {
+            b.get_bool(key)
         } else {
             self.get(path).and_then(|f| f.as_bool())
         }
@@ -354,13 +380,55 @@ impl Template {
 
     /// Queries an action or function binding expression (e.g. `"counter_button.on_click"` -> `Some("increment_counter()")`).
     pub fn query_binding(&self, path: &str) -> Option<&str> {
-        if let Some((block_sel, key)) = path.split_once('.') {
-            self.find_block(block_sel).and_then(|b| b.get_binding(key))
+        if let Some((b, key)) = self.resolve_block_and_key(path) {
+            b.get_binding(key)
         } else {
             self.iter().find_map(|f| match f {
                 ParsedField::VarFunc { var_name, signature } if var_name == path => Some(signature),
                 _ => None,
             })
+        }
+    }
+
+    /// Queries all items from a list field using dot-notation or top-level key (e.g. `"inventory.items"`).
+    pub fn query_list(&self, path: &str) -> Option<Vec<&str>> {
+        if let Some((b, key)) = self.resolve_block_and_key(path) {
+            b.get_list(key)
+        } else {
+            self.get(path).and_then(|f| match f {
+                ParsedField::List { .. } => Some(f.list_items()),
+                _ => None,
+            })
+        }
+    }
+
+    /// Queries a specific element by index from a list field (e.g. `query_list_item("inventory.items", 0)`).
+    pub fn query_list_item(&self, path: &str, index: usize) -> Option<&str> {
+        if let Some((b, key)) = self.resolve_block_and_key(path) {
+            b.get_list_item(key, index)
+        } else {
+            self.get(path).and_then(|f| f.list_item(index))
+        }
+    }
+
+    /// Queries all variants from an enum field using dot-notation or top-level key (e.g. `"profile.status"`).
+    pub fn query_enum(&self, path: &str) -> Option<Vec<&str>> {
+        if let Some((b, key)) = self.resolve_block_and_key(path) {
+            b.get_enum(key)
+        } else {
+            self.get(path).and_then(|f| match f {
+                ParsedField::Enum { .. } => Some(f.enum_variants()),
+                _ => None,
+            })
+        }
+    }
+
+    /// Queries a specific variant by index from an enum field (e.g. `query_enum_variant("profile.status", 0)`).
+    pub fn query_enum_variant(&self, path: &str, index: usize) -> Option<&str> {
+        if let Some((b, key)) = self.resolve_block_and_key(path) {
+            b.get_enum_variant(key, index)
+        } else {
+            self.get(path).and_then(|f| f.enum_variant(index))
         }
     }
 

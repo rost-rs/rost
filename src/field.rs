@@ -223,26 +223,44 @@ impl<'a> ParsedField<'a> {
 
     /// Splits and yields trimmed items if this field is a [`ParsedField::List`].
     pub fn list_items(&self) -> Vec<&'a str> {
-        match self {
-            ParsedField::List { raw_items, .. } => raw_items
-                .split(',')
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(|s| s.trim_matches('"'))
-                .collect(),
-            _ => Vec::new(),
-        }
+        self.iterate_list().collect()
+    }
+
+    /// Returns an iterator over trimmed items if this field is a [`ParsedField::List`].
+    pub fn iterate_list(&self) -> impl Iterator<Item = &'a str> {
+        let raw = match self {
+            ParsedField::List { raw_items, .. } => raw_items,
+            _ => "",
+        };
+        raw.split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.trim_matches('"'))
+    }
+
+    /// Returns the n-th item (0-indexed) if this field is a [`ParsedField::List`].
+    pub fn list_item(&self, index: usize) -> Option<&'a str> {
+        self.iterate_list().nth(index)
     }
 
     /// Splits and yields trimmed variants if this field is a [`ParsedField::Enum`].
     pub fn enum_variants(&self) -> Vec<&'a str> {
-        match self {
-            ParsedField::Enum { raw_variants, .. } => raw_variants
-                .split([',', '|', '\n'])
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .collect(),
-            _ => Vec::new(),
-        }
+        self.iterate_enum().collect()
+    }
+
+    /// Returns an iterator over trimmed variants if this field is a [`ParsedField::Enum`].
+    pub fn iterate_enum(&self) -> impl Iterator<Item = &'a str> {
+        let raw = match self {
+            ParsedField::Enum { raw_variants, .. } => raw_variants,
+            _ => "",
+        };
+        raw.split([',', '|', '\n'])
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    }
+
+    /// Returns the n-th variant (0-indexed) if this field is a [`ParsedField::Enum`].
+    pub fn enum_variant(&self, index: usize) -> Option<&'a str> {
+        self.iterate_enum().nth(index)
     }
 }
