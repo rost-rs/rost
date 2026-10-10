@@ -149,3 +149,111 @@ fn test_high_throughput_speed() {
     let min_expected = if cfg!(debug_assertions) { 10.0 } else { 150.0 };
     assert!(throughput_mb_s >= min_expected);
 }
+
+#[test]
+fn test_schema_and_queries() {
+    use rost::{rost_block_schema, rost_schema};
+
+    rost_schema! {
+        #[derive(Debug, PartialEq)]
+        pub struct MyFullTheme {
+            "palette.bg_window" => bg_window: hex = 0x000000,
+            "palette.accent"    => accent: hex = 0xffffff,
+            "card.border_radius" => card_radius: dim = 8.0,
+            "header.title"      => title: str = "Fallback Title",
+            "missing.prop"      => missing: i64 = 999,
+        }
+    }
+
+    rost_block_schema! {
+        #[derive(Debug, PartialEq)]
+        pub struct PaletteBlock {
+            bg_window: hex = 0x111111,
+            accent: hex = 0x222222,
+        }
+    }
+
+    let doc = r#"
+    #palette {
+        bg_window: #1e1e2e,
+        accent: #a6e3a1
+    }
+    #card {
+        border_radius: 14.5px
+    }
+    #header {
+        title: "Hello Rost"
+    }
+    "#;
+
+    let template = Template::from_str(doc);
+
+    // Test direct query methods
+    assert_eq!(template.query_hex("palette.bg_window"), Some(0x1e1e2e));
+    assert_eq!(template.query_hex("palette.accent"), Some(0xa6e3a1));
+    assert_eq!(template.query_dim("card.border_radius"), Some(14.5));
+    assert_eq!(template.query_str("header.title"), Some("Hello Rost"));
+    assert_eq!(template.query_str("nonexistent"), None);
+
+    // Test rost_schema! hydration
+    let theme = MyFullTheme::from_template(&template);
+    assert_eq!(theme.bg_window, 0x1e1e2e);
+    assert_eq!(theme.accent, 0xa6e3a1);
+    assert_eq!(theme.card_radius, 14.5);
+    assert_eq!(theme.title, "Hello Rost");
+    assert_eq!(theme.missing, 999);
+
+    // Test rost_block_schema! hydration
+    let pal = PaletteBlock::from_template(&template, "palette");
+    assert_eq!(pal.bg_window, 0x1e1e2e);
+    assert_eq!(pal.accent, 0xa6e3a1);
+}
+
+#[test]
+fn test_hot_reloading_watcher() {
+    use std::fs;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::thread;
+    use std::time::Duration;
+
+    let temp_dir = std::env::temp_dir();
+    let temp_file = temp_dir.join(format!("rost_test_hot_reload_{}.rost", std::process::id()));
+
+    fs::write(&temp_file, "#window { width: 500px }").unwrap();
+
+    let mut template = Template::load(&temp_file).expect("load with hot reload");
+    assert!(template.is_hot_reload_enabled());
+    assert_eq!(template.query_dim("window.width"), Some(500.0));
+
+    let reloaded_flag = Arc::new(AtomicBool::new(false));
+    let flag_clone = reloaded_flag.clone();
+    template.on_reload(move |new_tmpl| {
+        if new_tmpl.query_dim("window.width") == Some(950.0) {
+            flag_clone.store(true, Ordering::Relaxed);
+        }
+    });
+
+    let rx = template.subscribe().expect("channel subscriber");
+
+    // Give watcher thread a tiny moment to initiate
+    thread::sleep(Duration::from_millis(50));
+
+    // Overwrite file
+    fs::write(&temp_file, "#window { width: 950px }").unwrap();
+
+    // Check if channel received within 500ms
+    let received = rx.recv_timeout(Duration::from_millis(800));
+    assert!(received.is_ok(), "Should have received hot reload event");
+    let updated = received.unwrap();
+    assert_eq!(updated.query_dim("window.width"), Some(950.0));
+
+    // Check check_reload polling
+    assert!(template.check_reload());
+    assert_eq!(template.query_dim("window.width"), Some(950.0));
+    assert!(reloaded_flag.load(Ordering::Relaxed));
+
+    // Clean up
+    let _ = fs::remove_file(temp_file);
+}
+
