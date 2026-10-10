@@ -1,0 +1,94 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <!-- Background rounded squircle gradient (optional, subtle) -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1e1e2e" />
+      <stop offset="100%" stop-color="#11111b" />
+    </linearGradient>
+
+    <!-- Rost Rust Orange gradients -->
+    <linearGradient id="rustPrimary" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ff8f4a" />
+      <stop offset="50%" stop-color="#e55f28" />
+      <stop offset="100%" stop-color="#b53900" />
+    </linearGradient>
+
+    <linearGradient id="braceGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ffb07a" />
+      <stop offset="50%" stop-color="#f2692e" />
+      <stop offset="100%" stop-color="#c43f05" />
+    </linearGradient>
+
+    <linearGradient id="accentCore" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.9" />
+      <stop offset="100%" stop-color="#ffb68f" stop-opacity="0.6" />
+    </linearGradient>
+
+    <!-- Ambient Shadow & Glow -->
+    <filter id="softGlow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="6" stdDeviation="12" flood-color="#000000" flood-opacity="0.45" />
+      <feDropShadow dx="0" dy="0" stdDeviation="16" flood-color="#e55f28" flood-opacity="0.3" />
+    </filter>
+  </defs>
+
+  <!-- Left Stylized Brace { -->
+  <path d="M 126 82
+           C 76 82, 60 126, 60 188
+           C 60 222, 54 240, 24 252
+           C 18 254.5, 18 257.5, 24 260
+           C 54 272, 60 290, 60 324
+           C 60 386, 76 430, 126 430
+           C 138 430, 148 422, 148 410
+           C 148 398, 140 392, 128 392
+           C 98 392, 92 364, 92 320
+           C 92 278, 80 259, 54 256
+           C 80 253, 92 234, 92 192
+           C 92 148, 98 120, 128 120
+           C 140 120, 148 114, 148 102
+           C 148 90, 138 82, 126 82 Z"
+        fill="url(#braceGrad)" filter="url(#softGlow)"/>
+
+  <!-- Right Stylized Brace } -->
+  <path d="M 386 82
+           C 436 82, 452 126, 452 188
+           C 452 222, 458 240, 488 252
+           C 494 254.5, 494 257.5, 488 260
+           C 458 272, 452 290, 452 324
+           C 452 386, 436 430, 386 430
+           C 374 430, 364 422, 364 410
+           C 364 398, 372 392, 384 392
+           C 414 392, 420 364, 420 320
+           C 420 278, 432 259, 458 256
+           C 432 253, 420 234, 420 192
+           C 420 148, 414 120, 384 120
+           C 372 120, 364 114, 364 102
+           C 364 90, 374 82, 386 82 Z"
+        fill="url(#braceGrad)" filter="url(#softGlow)"/>
+
+  <!-- Center Rust Gear Core -->
+  <path d="M 362.00 256.00 L 361.57 265.50 L 380.17 277.38 L 377.15 290.61 L 355.24 293.25 L 351.50 301.99 L 347.00 310.37 L 358.60 329.14 L 350.14 339.75 L 329.25 332.62 L 322.09 338.87 L 314.40 344.46 L 316.70 366.41 L 304.48 372.30 L 288.76 356.81 L 279.59 359.34 L 270.23 361.04 L 262.78 381.82 L 249.22 381.82 L 241.77 361.04 L 232.41 359.34 L 223.24 356.81 L 207.52 372.30 L 195.30 366.41 L 197.60 344.46 L 189.91 338.87 L 182.75 332.62 L 161.86 339.75 L 153.40 329.14 L 165.00 310.37 L 160.50 301.99 L 156.76 293.25 L 134.85 290.61 L 131.83 277.38 L 150.43 265.50 L 150.00 256.00 L 150.43 246.50 L 131.83 234.62 L 134.85 221.39 L 156.76 218.75 L 160.50 210.01 L 165.00 201.63 L 153.40 182.86 L 161.86 172.25 L 182.75 179.38 L 189.91 173.13 L 197.60 167.54 L 195.30 145.59 L 207.52 139.70 L 223.24 155.19 L 232.41 152.66 L 241.77 150.96 L 249.22 130.18 L 262.78 130.18 L 270.23 150.96 L 279.59 152.66 L 288.76 155.19 L 304.48 139.70 L 316.70 145.59 L 314.40 167.54 L 322.09 173.13 L 329.25 179.38 L 350.14 172.25 L 358.60 182.86 L 347.00 201.63 L 351.50 210.01 L 355.24 218.75 L 377.15 221.39 L 380.17 234.62 L 361.57 246.50 Z M 273.00 204.00 A 17 17 0 1 0 239.00 204.00 A 17 17 0 1 0 273.00 204.00 Z M 322.45 239.93 A 17 17 0 1 0 288.45 239.93 A 17 17 0 1 0 322.45 239.93 Z M 303.56 298.07 A 17 17 0 1 0 269.56 298.07 A 17 17 0 1 0 303.56 298.07 Z M 242.44 298.07 A 17 17 0 1 0 208.44 298.07 A 17 17 0 1 0 242.44 298.07 Z M 223.55 239.93 A 17 17 0 1 0 189.55 239.93 A 17 17 0 1 0 223.55 239.93 Z M 280.00 256.00 A 24 24 0 1 0 232.00 256.00 A 24 24 0 1 0 280.00 256.00 Z "
+        fill="url(#rustPrimary)"
+        fill-rule="evenodd"
+        filter="url(#softGlow)"/>
+
+  <!-- Inner Rim Precision Ring -->
+  <circle cx="256" cy="256" r="30" fill="none" stroke="url(#accentCore)" stroke-width="2.5" opacity="0.75"/>
+
+  <!-- Stylized "R" in Central Hub -->
+  <path d="M 247 242
+           L 257 242
+           C 262 242, 266 244, 266 248
+           C 266 252, 262 254, 257 254
+           L 247 254 Z
+           M 242 237
+           L 242 275
+           L 247 275
+           L 247 258
+           L 256 258
+           L 264 275
+           L 270 275
+           L 261 256.5
+           C 267 255.5, 271 252.5, 271 247
+           C 271 241, 266 237, 257 237 Z"
+        fill="#ffffff" opacity="0.95"/>
+</svg>
