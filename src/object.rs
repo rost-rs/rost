@@ -154,6 +154,91 @@ impl Template {
 
     /// Converts a specific block into an owned [`RostObject`].
     pub fn to_obj(&self, selector: &str) -> Option<RostObject> {
-        self.find_block(selector).as_ref().map(RostObject::from_block)
+        let clean = selector.strip_prefix('#').unwrap_or(selector);
+        let mut idx = 0;
+        let mut parent_name: Option<String> = None;
+        let mut target_start: Option<usize> = None;
+        let mut matched_name = String::new();
+
+        let mut stack: Vec<String> = Vec::with_capacity(4);
+
+        while idx < self.fields.len() {
+            let tag = self.fields[idx];
+            match tag {
+                crate::parser::TAG_BLOCK_START => {
+                    let name = crate::parser::resolve_slice(&self.data, &self.fields, idx + 1);
+                    idx += 13;
+                    let clean_name = name.strip_prefix('#').unwrap_or(name);
+                    let full_path = if let Some(p) = stack.last() {
+                        format!("{}.{}", p, clean_name)
+                    } else {
+                        clean_name.to_string()
+                    };
+
+                    if clean_name == clean || full_path == clean {
+                        parent_name = stack.last().cloned();
+                        matched_name = clean_name.to_string();
+                        target_start = Some(idx);
+                        break;
+                    }
+                    stack.push(full_path);
+                }
+                crate::parser::TAG_BLOCK_END => {
+                    stack.pop();
+                    idx += 5;
+                }
+                crate::parser::TAG_COMMON_TEXT | crate::parser::TAG_SUBTITLE | crate::parser::TAG_DIRECTIVE => idx += 21,
+                crate::parser::TAG_ENUM | crate::parser::TAG_LIST => idx += 25,
+                crate::parser::TAG_VAR_FUNC => idx += 17,
+                crate::parser::TAG_TITLE => idx += 13,
+                _ => idx += 1,
+            }
+        }
+
+        if let Some(start_idx) = target_start {
+            let mut obj = RostObject::new(matched_name);
+            obj.parent = parent_name;
+
+            let mut cur = start_idx;
+            let mut depth = 1;
+
+            while cur < self.fields.len() && depth > 0 {
+                let tag = self.fields[cur];
+                match tag {
+                    crate::parser::TAG_COMMON_TEXT => {
+                        if depth == 1 {
+                            let key = crate::parser::resolve_slice(&self.data, &self.fields, cur + 1);
+                            let val = crate::parser::resolve_slice(&self.data, &self.fields, cur + 9);
+                            obj.properties.insert(key.to_string(), val.to_string());
+                        }
+                        cur += 21;
+                    }
+                    crate::parser::TAG_BLOCK_START => {
+                        depth += 1;
+                        cur += 13;
+                    }
+                    crate::parser::TAG_BLOCK_END => {
+                        depth -= 1;
+                        cur += 5;
+                    }
+                    crate::parser::TAG_ENUM | crate::parser::TAG_LIST => {
+                        if depth == 1 {
+                            let key = crate::parser::resolve_slice(&self.data, &self.fields, cur + 1);
+                            let val = crate::parser::resolve_slice(&self.data, &self.fields, cur + 9);
+                            obj.properties.insert(key.to_string(), val.to_string());
+                        }
+                        cur += 25;
+                    }
+                    crate::parser::TAG_SUBTITLE | crate::parser::TAG_DIRECTIVE => cur += 21,
+                    crate::parser::TAG_VAR_FUNC => cur += 17,
+                    crate::parser::TAG_TITLE => cur += 13,
+                    _ => cur += 1,
+                }
+            }
+
+            Some(obj)
+        } else {
+            self.find_block(selector).as_ref().map(RostObject::from_block)
+        }
     }
 }

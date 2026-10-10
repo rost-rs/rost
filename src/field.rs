@@ -52,6 +52,141 @@ impl<'a> Dimension<'a> {
     }
 }
 
+/// Fast 256-entry lookup table for hexadecimal character decoding in O(1).
+pub const HEX_LUT: [u8; 256] = {
+    let mut lut = [0xFFu8; 256];
+    let mut i = b'0';
+    while i <= b'9' {
+        lut[i as usize] = i - b'0';
+        i += 1;
+    }
+    let mut i = b'a';
+    while i <= b'f' {
+        lut[i as usize] = i - b'a' + 10;
+        i += 1;
+    }
+    let mut i = b'A';
+    while i <= b'F' {
+        lut[i as usize] = i - b'A' + 10;
+        i += 1;
+    }
+    lut
+};
+
+/// High-throughput scalar parser for hexadecimal colors or unsigned integers without heap allocations.
+#[inline(always)]
+pub fn parse_fast_u32(raw: &str) -> Option<u32> {
+    let bytes = raw.as_bytes();
+    let mut start = 0;
+    while start < bytes.len() && (bytes[start] == b' ' || bytes[start] == b'\t') {
+        start += 1;
+    }
+    let mut end = bytes.len();
+    while end > start && (bytes[end - 1] == b' ' || bytes[end - 1] == b'\t' || bytes[end - 1] == b';') {
+        end -= 1;
+    }
+    let slice = &bytes[start..end];
+    if slice.is_empty() {
+        return None;
+    }
+
+    if slice[0] == b'#' {
+        let hex = &slice[1..];
+        if hex.len() == 6 {
+            let h0 = HEX_LUT[hex[0] as usize];
+            let h1 = HEX_LUT[hex[1] as usize];
+            let h2 = HEX_LUT[hex[2] as usize];
+            let h3 = HEX_LUT[hex[3] as usize];
+            let h4 = HEX_LUT[hex[4] as usize];
+            let h5 = HEX_LUT[hex[5] as usize];
+            if (h0 | h1 | h2 | h3 | h4 | h5) != 0xFF {
+                return Some(((h0 as u32) << 20) | ((h1 as u32) << 16) | ((h2 as u32) << 12) | ((h3 as u32) << 8) | ((h4 as u32) << 4) | (h5 as u32));
+            }
+        } else if hex.len() == 8 {
+            let h0 = HEX_LUT[hex[0] as usize];
+            let h1 = HEX_LUT[hex[1] as usize];
+            let h2 = HEX_LUT[hex[2] as usize];
+            let h3 = HEX_LUT[hex[3] as usize];
+            let h4 = HEX_LUT[hex[4] as usize];
+            let h5 = HEX_LUT[hex[5] as usize];
+            if (h0 | h1 | h2 | h3 | h4 | h5) != 0xFF {
+                return Some(((h0 as u32) << 20) | ((h1 as u32) << 16) | ((h2 as u32) << 12) | ((h3 as u32) << 8) | ((h4 as u32) << 4) | (h5 as u32));
+            }
+        } else if hex.len() == 3 {
+            let h0 = HEX_LUT[hex[0] as usize];
+            let h1 = HEX_LUT[hex[1] as usize];
+            let h2 = HEX_LUT[hex[2] as usize];
+            if (h0 | h1 | h2) != 0xFF {
+                return Some(((h0 as u32 * 17) << 16) | ((h1 as u32 * 17) << 8) | (h2 as u32 * 17));
+            }
+        }
+        if let Ok(s) = std::str::from_utf8(hex) {
+            return u32::from_str_radix(s, 16).ok();
+        }
+    } else if slice.len() > 2 && (slice[0] == b'0' && (slice[1] == b'x' || slice[1] == b'X')) {
+        let hex = &slice[2..];
+        if hex.len() == 6 {
+            let h0 = HEX_LUT[hex[0] as usize];
+            let h1 = HEX_LUT[hex[1] as usize];
+            let h2 = HEX_LUT[hex[2] as usize];
+            let h3 = HEX_LUT[hex[3] as usize];
+            let h4 = HEX_LUT[hex[4] as usize];
+            let h5 = HEX_LUT[hex[5] as usize];
+            if (h0 | h1 | h2 | h3 | h4 | h5) != 0xFF {
+                return Some(((h0 as u32) << 20) | ((h1 as u32) << 16) | ((h2 as u32) << 12) | ((h3 as u32) << 8) | ((h4 as u32) << 4) | (h5 as u32));
+            }
+        } else if hex.len() == 8 {
+            let h0 = HEX_LUT[hex[0] as usize];
+            let h1 = HEX_LUT[hex[1] as usize];
+            let h2 = HEX_LUT[hex[2] as usize];
+            let h3 = HEX_LUT[hex[3] as usize];
+            let h4 = HEX_LUT[hex[4] as usize];
+            let h5 = HEX_LUT[hex[5] as usize];
+            if (h0 | h1 | h2 | h3 | h4 | h5) != 0xFF {
+                return Some(((h0 as u32) << 20) | ((h1 as u32) << 16) | ((h2 as u32) << 12) | ((h3 as u32) << 8) | ((h4 as u32) << 4) | (h5 as u32));
+            }
+        } else if hex.len() == 3 {
+            let h0 = HEX_LUT[hex[0] as usize];
+            let h1 = HEX_LUT[hex[1] as usize];
+            let h2 = HEX_LUT[hex[2] as usize];
+            if (h0 | h1 | h2) != 0xFF {
+                return Some(((h0 as u32 * 17) << 16) | ((h1 as u32 * 17) << 8) | (h2 as u32 * 17));
+            }
+        }
+        if let Ok(s) = std::str::from_utf8(hex) {
+            return u32::from_str_radix(s, 16).ok();
+        }
+    } else {
+        let mut val = 0u32;
+        for &b in slice {
+            if b >= b'0' && b <= b'9' {
+                val = val.wrapping_mul(10).wrapping_add((b - b'0') as u32);
+            } else {
+                return std::str::from_utf8(slice).ok()?.parse::<u32>().ok();
+            }
+        }
+        return Some(val);
+    }
+    None
+}
+
+/// Fast float parser extracting the numeric prefix without allocating strings.
+#[inline(always)]
+pub fn parse_fast_f32(raw: &str) -> Option<f32> {
+    let bytes = raw.as_bytes();
+    let mut start = 0;
+    while start < bytes.len() && (bytes[start] == b' ' || bytes[start] == b'\t') {
+        start += 1;
+    }
+    let mut end = bytes.len();
+    while end > start && (bytes[end - 1] == b' ' || bytes[end - 1] == b'\t' || bytes[end - 1] == b';' || bytes[end - 1].is_ascii_alphabetic() || bytes[end - 1] == b'%') {
+        end -= 1;
+    }
+    let slice = &bytes[start..end];
+    let s = std::str::from_utf8(slice).ok()?;
+    s.parse::<f32>().ok()
+}
+
 /// Represents an individual field or syntactic node extracted from a `.rost` document.
 ///
 /// Designed with zero allocations in mind: each field borrows its textual content
@@ -196,29 +331,7 @@ impl<'a> ParsedField<'a> {
     /// Returns the color packed into a `u32` (RGB or RGBA).
     pub fn as_hex_color(&self) -> Option<u32> {
         let s = self.as_str()?;
-        let hex = if let Some(stripped) = s.strip_prefix('#') {
-            stripped
-        } else {
-            s.strip_prefix("0x")?
-        };
-
-        if hex.len() == 3 {
-            // #RGB -> #RRGGBB
-            let r = u32::from_str_radix(&hex[0..1], 16).ok()?;
-            let g = u32::from_str_radix(&hex[1..2], 16).ok()?;
-            let b = u32::from_str_radix(&hex[2..3], 16).ok()?;
-            return Some(((r * 17) << 16) | ((g * 17) << 8) | (b * 17));
-        }
-
-        if hex.len() == 8 {
-            // #RRGGBBAA -> extract 24-bit RGB so alpha suffix doesn't corrupt color channels
-            let r = u32::from_str_radix(&hex[0..2], 16).ok()?;
-            let g = u32::from_str_radix(&hex[2..4], 16).ok()?;
-            let b = u32::from_str_radix(&hex[4..6], 16).ok()?;
-            return Some((r << 16) | (g << 8) | b);
-        }
-
-        u32::from_str_radix(hex, 16).ok()
+        parse_fast_u32(s)
     }
 
     /// Splits and yields trimmed items if this field is a [`ParsedField::List`].
