@@ -9,3 +9,7 @@ repository = "https://github.com/rost-rs/rost"
 
 [dependencies]
 memchr = "2.8.3"
+serde = { version = "1.0.229", features = ["derive"], optional = true }
+
+[features]
+serde = ["dep:serde"]

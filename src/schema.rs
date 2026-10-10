@@ -88,13 +88,45 @@ macro_rules! __rost_extract_block {
 /// assert_eq!(theme.title, "Default Title");
 /// ```
 #[macro_export]
+macro_rules! __rost_schema_item {
+    // Explicit path
+    ($t:expr, $path:literal => $field_name:ident : $type:ident = $default:expr) => {
+        $crate::__rost_extract!($t, $path, $type, $default)
+    };
+    // Auto named field
+    ($t:expr, $field_name:ident : $type:ident = $default:expr) => {
+        $crate::__rost_extract!($t, stringify!($field_name), $type, $default)
+    };
+}
+
+#[macro_export]
+macro_rules! __rost_schema_field_name {
+    ($path:literal => $field_name:ident : $type:ident = $default:expr) => {
+        $field_name
+    };
+    ($field_name:ident : $type:ident = $default:expr) => {
+        $field_name
+    };
+}
+
+#[macro_export]
+macro_rules! __rost_schema_field_type {
+    ($path:literal => $field_name:ident : $type:ident = $default:expr) => {
+        $type
+    };
+    ($field_name:ident : $type:ident = $default:expr) => {
+        $type
+    };
+}
+
+#[macro_export]
 macro_rules! rost_schema {
     (
         $(#[$meta:meta])*
         $vis:vis struct $struct_name:ident {
             $(
-                $path:literal => $field_name:ident : $type:ident = $default:expr
-            ),* $(,)?
+                $( $path:literal => )? $field_name:ident : $type:ident = $default:expr
+            ),* $(, .. $tail:ident )? $(,)?
         }
     ) => {
         $(#[$meta])*
@@ -105,12 +137,14 @@ macro_rules! rost_schema {
         }
 
         impl $struct_name {
-            /// Instantiates the schema directly from a parsed [Template], resolving all paths
-            /// and falling back safely to defaults for missing fields.
             pub fn from_template(template: &$crate::Template) -> Self {
                 Self {
                     $(
-                        $field_name: $crate::__rost_extract!(template, $path, $type, $default),
+                        $field_name: {
+                            let mut path = stringify!($field_name);
+                            $( path = $path; )?
+                            $crate::__rost_extract!(template, path, $type, $default)
+                        },
                     )*
                 }
             }

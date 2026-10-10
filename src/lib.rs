@@ -90,11 +90,19 @@ pub mod parser;
 pub mod query;
 pub mod schema;
 pub mod watcher;
+pub mod object;
+
+#[cfg(feature = "serde")]
+pub mod de;
 
 pub use field::{Dimension, ParsedField};
 pub use malleable::{MalleablePatcher, RostBuilder};
 pub use query::{parse_blocks, BlockView, FieldIter};
 pub use watcher::{CentralWatcher, HotReloadWatcher, ReloadCallback};
+pub use object::RostObject;
+
+#[cfg(feature = "serde")]
+pub use de::{from_block, from_template, DeError};
 
 use std::fs;
 use std::path::{Path, PathBuf};
