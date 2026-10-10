@@ -210,6 +210,14 @@ impl<'a> ParsedField<'a> {
             return Some(((r * 17) << 16) | ((g * 17) << 8) | (b * 17));
         }
 
+        if hex.len() == 8 {
+            // #RRGGBBAA -> extract 24-bit RGB so alpha suffix doesn't corrupt color channels
+            let r = u32::from_str_radix(&hex[0..2], 16).ok()?;
+            let g = u32::from_str_radix(&hex[2..4], 16).ok()?;
+            let b = u32::from_str_radix(&hex[4..6], 16).ok()?;
+            return Some((r << 16) | (g << 8) | b);
+        }
+
         u32::from_str_radix(hex, 16).ok()
     }
 
