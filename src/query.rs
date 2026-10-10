@@ -173,6 +173,14 @@ impl<'a> BlockView<'a> {
     pub fn get_bool(&self, key: &str) -> Option<bool> {
         self.get(key).and_then(|f| f.as_bool())
     }
+
+    /// Retrieves an action or function binding expression (e.g. `on_click = increment_counter()`).
+    pub fn get_binding(&self, key: &str) -> Option<&'a str> {
+        self.fields.iter().find_map(|f| match f {
+            ParsedField::VarFunc { var_name, signature } if *var_name == key => Some(*signature),
+            _ => None,
+        })
+    }
 }
 
 /// Extracts all top-level and nested scoped blocks from a `.rost` document.

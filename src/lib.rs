@@ -94,7 +94,7 @@ pub mod watcher;
 pub use field::{Dimension, ParsedField};
 pub use malleable::{MalleablePatcher, RostBuilder};
 pub use query::{parse_blocks, BlockView, FieldIter};
-pub use watcher::{HotReloadWatcher, ReloadCallback};
+pub use watcher::{CentralWatcher, HotReloadWatcher, ReloadCallback};
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -349,6 +349,18 @@ impl Template {
             self.find_block(block_sel).and_then(|b| b.get_bool(key))
         } else {
             self.get(path).and_then(|f| f.as_bool())
+        }
+    }
+
+    /// Queries an action or function binding expression (e.g. `"counter_button.on_click"` -> `Some("increment_counter()")`).
+    pub fn query_binding(&self, path: &str) -> Option<&str> {
+        if let Some((block_sel, key)) = path.split_once('.') {
+            self.find_block(block_sel).and_then(|b| b.get_binding(key))
+        } else {
+            self.iter().find_map(|f| match f {
+                ParsedField::VarFunc { var_name, signature } if var_name == path => Some(signature),
+                _ => None,
+            })
         }
     }
 
