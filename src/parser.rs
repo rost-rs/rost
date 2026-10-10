@@ -519,7 +519,14 @@ fn trim_trailing_ws(data: &[u8], start: usize, mut end: usize) -> usize {
 /// Reads a 32-bit Little Endian integer from the byte buffer at the specified index.
 #[inline(always)]
 pub fn read_u32(buf: &[u8], idx: usize) -> u32 {
-    u32::from_le_bytes(buf[idx..idx + 4].try_into().unwrap_or([0; 4]))
+    if idx + 4 <= buf.len() {
+        unsafe {
+            let ptr = buf.as_ptr().add(idx) as *const [u8; 4];
+            u32::from_le_bytes(*ptr)
+        }
+    } else {
+        0
+    }
 }
 
 /// Resolves a zero-copy string slice from the source buffer using offsets stored in bytecode.
@@ -530,10 +537,7 @@ pub fn resolve_slice<'a>(data: &'a [u8], fields: &[u8], idx: usize) -> &'a str {
     if off + len > data.len() {
         return "";
     }
-    match std::str::from_utf8(&data[off..off + len]) {
-        Ok(s) => s,
-        Err(_) => unsafe { std::str::from_utf8_unchecked(&data[off..off + len]) },
-    }
+    unsafe { std::str::from_utf8_unchecked(&data[off..off + len]) }
 }
 
 /// Finds the next unescaped quotation mark `"` using SIMD acceleration.

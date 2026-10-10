@@ -183,8 +183,50 @@ pub fn parse_fast_f32(raw: &str) -> Option<f32> {
         end -= 1;
     }
     let slice = &bytes[start..end];
-    let s = std::str::from_utf8(slice).ok()?;
-    s.parse::<f32>().ok()
+    if slice.is_empty() {
+        return None;
+    }
+
+    let mut i = 0;
+    let mut negative = false;
+    if slice[0] == b'-' {
+        negative = true;
+        i += 1;
+    } else if slice[0] == b'+' {
+        i += 1;
+    }
+
+    let mut int_part: u64 = 0;
+    let mut has_digits = false;
+    while i < slice.len() && slice[i] >= b'0' && slice[i] <= b'9' {
+        int_part = int_part * 10 + (slice[i] - b'0') as u64;
+        has_digits = true;
+        i += 1;
+    }
+
+    let mut val = int_part as f64;
+    if i < slice.len() && slice[i] == b'.' {
+        i += 1;
+        let mut div = 1.0f64;
+        while i < slice.len() && slice[i] >= b'0' && slice[i] <= b'9' {
+            div *= 10.0;
+            val += ((slice[i] - b'0') as f64) / div;
+            has_digits = true;
+            i += 1;
+        }
+    }
+
+    if !has_digits {
+        return None;
+    }
+
+    if i < slice.len() {
+        let s = std::str::from_utf8(slice).ok()?;
+        return s.parse::<f32>().ok();
+    }
+
+    let res = if negative { -val as f32 } else { val as f32 };
+    Some(res)
 }
 
 /// Represents an individual field or syntactic node extracted from a `.rost` document.
