@@ -30,27 +30,42 @@ impl de::Error for DeError {
     }
 }
 
+#[inline]
+fn strip_hash(s: &str) -> &str {
+    s.strip_prefix('#').unwrap_or(s)
+}
+
 /// Deserializes a [`BlockView`] into type `T`.
 pub fn from_block<'de, 'a, T: de::Deserialize<'de>>(block: &'a BlockView<'a>) -> Result<T, DeError> {
-    T::deserialize(BlockDeserializer { block })
+    T::deserialize(BlockDeserializer {
+        block,
+        all_blocks: &[],
+    })
 }
 
 /// Deserializes a [`Template`] into type `T`.
 pub fn from_template<'de, 'a, T: de::Deserialize<'de>>(template: &'a Template) -> Result<T, DeError> {
     let blocks = template.blocks();
-    T::deserialize(TemplateDeserializer { blocks: &blocks })
+    T::deserialize(TemplateDeserializer { all_blocks: &blocks })
 }
 
 struct TemplateDeserializer<'a> {
-    blocks: &'a [BlockView<'a>],
+    all_blocks: &'a [BlockView<'a>],
 }
 
 impl<'de, 'a> Deserializer<'de> for TemplateDeserializer<'a> {
     type Error = DeError;
 
     fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
+        let root_blocks: Vec<&'a BlockView<'a>> = self
+            .all_blocks
+            .iter()
+            .filter(|b| b.parent.is_none())
+            .collect();
+
         visitor.visit_map(TemplateMapAccess {
-            blocks: self.blocks,
+            all_blocks: self.all_blocks,
+            root_blocks,
             idx: 0,
             current_value: None,
         })
@@ -64,7 +79,8 @@ impl<'de, 'a> Deserializer<'de> for TemplateDeserializer<'a> {
 }
 
 struct TemplateMapAccess<'a> {
-    blocks: &'a [BlockView<'a>],
+    all_blocks: &'a [BlockView<'a>],
+    root_blocks: Vec<&'a BlockView<'a>>,
     idx: usize,
     current_value: Option<&'a BlockView<'a>>,
 }
@@ -73,34 +89,58 @@ impl<'de, 'a> MapAccess<'de> for TemplateMapAccess<'a> {
     type Error = DeError;
 
     fn next_key_seed<K: DeserializeSeed<'de>>(&mut self, seed: K) -> Result<Option<K::Value>, Self::Error> {
-        if self.idx >= self.blocks.len() {
+        if self.idx >= self.root_blocks.len() {
             return Ok(None);
         }
-        let b = &self.blocks[self.idx];
+        let b = self.root_blocks[self.idx];
         self.idx += 1;
-        let key = b.name;
+        let key = strip_hash(b.name);
         self.current_value = Some(b);
         seed.deserialize(key.into_deserializer()).map(Some)
     }
 
     fn next_value_seed<V: DeserializeSeed<'de>>(&mut self, seed: V) -> Result<V::Value, Self::Error> {
         let b = self.current_value.take().ok_or_else(|| DeError("missing block value".into()))?;
-        seed.deserialize(BlockDeserializer { block: b })
+        seed.deserialize(BlockDeserializer {
+            block: b,
+            all_blocks: self.all_blocks,
+        })
     }
+}
+
+enum BlockEntry<'a> {
+    Field(&'a ParsedField<'a>),
+    ChildBlock(&'a BlockView<'a>),
 }
 
 struct BlockDeserializer<'a> {
     block: &'a BlockView<'a>,
+    all_blocks: &'a [BlockView<'a>],
 }
 
 impl<'de, 'a> Deserializer<'de> for BlockDeserializer<'a> {
     type Error = DeError;
 
     fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
+        let parent_name = strip_hash(self.block.name);
+        let child_blocks: Vec<&'a BlockView<'a>> = self
+            .all_blocks
+            .iter()
+            .filter(|b| {
+                if let Some(p) = b.parent {
+                    strip_hash(p) == parent_name
+                } else {
+                    false
+                }
+            })
+            .collect();
+
         visitor.visit_map(BlockMapAccess {
             block: self.block,
+            all_blocks: self.all_blocks,
+            child_blocks,
             idx: 0,
-            current_field: None,
+            current_entry: None,
         })
     }
 
@@ -113,26 +153,43 @@ impl<'de, 'a> Deserializer<'de> for BlockDeserializer<'a> {
 
 struct BlockMapAccess<'a> {
     block: &'a BlockView<'a>,
+    all_blocks: &'a [BlockView<'a>],
+    child_blocks: Vec<&'a BlockView<'a>>,
     idx: usize,
-    current_field: Option<&'a ParsedField<'a>>,
+    current_entry: Option<BlockEntry<'a>>,
 }
 
 impl<'de, 'a> MapAccess<'de> for BlockMapAccess<'a> {
     type Error = DeError;
 
     fn next_key_seed<K: DeserializeSeed<'de>>(&mut self, seed: K) -> Result<Option<K::Value>, Self::Error> {
-        if self.idx >= self.block.fields.len() {
+        let total = self.block.fields.len() + self.child_blocks.len();
+        if self.idx >= total {
             return Ok(None);
         }
-        let field = &self.block.fields[self.idx];
+        let cur = self.idx;
         self.idx += 1;
-        self.current_field = Some(field);
-        seed.deserialize(field.name().into_deserializer()).map(Some)
+
+        if cur < self.block.fields.len() {
+            let field = &self.block.fields[cur];
+            self.current_entry = Some(BlockEntry::Field(field));
+            seed.deserialize(field.name().into_deserializer()).map(Some)
+        } else {
+            let child = self.child_blocks[cur - self.block.fields.len()];
+            let child_name = strip_hash(child.name);
+            self.current_entry = Some(BlockEntry::ChildBlock(child));
+            seed.deserialize(child_name.into_deserializer()).map(Some)
+        }
     }
 
     fn next_value_seed<V: DeserializeSeed<'de>>(&mut self, seed: V) -> Result<V::Value, Self::Error> {
-        let field = self.current_field.take().ok_or_else(|| DeError("missing field value".into()))?;
-        seed.deserialize(FieldDeserializer { field })
+        match self.current_entry.take().ok_or_else(|| DeError("missing entry value".into()))? {
+            BlockEntry::Field(field) => seed.deserialize(FieldDeserializer { field }),
+            BlockEntry::ChildBlock(b) => seed.deserialize(BlockDeserializer {
+                block: b,
+                all_blocks: self.all_blocks,
+            }),
+        }
     }
 }
 
@@ -235,7 +292,11 @@ impl Template {
         let block = self
             .find_block(selector)
             .ok_or_else(|| DeError(format!("block '{}' not found", selector)))?;
-        from_block(&block)
+        let blocks = self.blocks();
+        T::deserialize(BlockDeserializer {
+            block: &block,
+            all_blocks: &blocks,
+        })
     }
 
     /// Deserializes the entire template root into type `T`.
