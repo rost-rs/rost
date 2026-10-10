@@ -257,3 +257,78 @@ fn test_hot_reloading_watcher() {
     let _ = fs::remove_file(temp_file);
 }
 
+#[test]
+fn test_declarative_action_bindings() {
+    let doc = r#"
+    #player_controls {
+        on_jump = jump_action(velocity: 15.0),
+        on_boost = activate_nitro(force: 1000.0)
+    }
+    on_global_pause = pause_game()
+    "#;
+
+    let template = Template::from_str(doc);
+
+    // Query binding from scoped block
+    assert_eq!(
+        template.query_binding("player_controls.on_jump"),
+        Some("jump_action(velocity: 15.0)")
+    );
+    assert_eq!(
+        template.query_binding("player_controls.on_boost"),
+        Some("activate_nitro(force: 1000.0)")
+    );
+
+    // Query top-level binding
+    assert_eq!(
+        template.query_binding("on_global_pause"),
+        Some("pause_game()")
+    );
+
+    // Scoped block getter
+    let block = template.find_block("player_controls").unwrap();
+    assert_eq!(
+        block.get_binding("on_jump"),
+        Some("jump_action(velocity: 15.0)")
+    );
+    assert_eq!(block.get_binding("nonexistent"), None);
+}
+
+#[test]
+fn test_multi_file_scaling_central_watcher() {
+    use std::fs;
+    use std::time::Duration;
+    use rost::CentralWatcher;
+
+    let temp_dir = std::env::temp_dir();
+    let file1 = temp_dir.join(format!("rost_multi_1_{}.rost", std::process::id()));
+    let file2 = temp_dir.join(format!("rost_multi_2_{}.rost", std::process::id()));
+
+    fs::write(&file1, "#car { mass: 1200kg }").unwrap();
+    fs::write(&file2, "#arena { gravity: 9.8 }").unwrap();
+
+    let t1 = Template::load(&file1).expect("load file1");
+    let t2 = Template::load(&file2).expect("load file2");
+
+    let rx1 = t1.subscribe().expect("rx1");
+    let rx2 = t2.subscribe().expect("rx2");
+
+    assert!(CentralWatcher::global().active_files_count() >= 2);
+
+    std::thread::sleep(Duration::from_millis(50));
+
+    // Update only file2
+    fs::write(&file2, "#arena { gravity: 15.0 }").unwrap();
+
+    let res2 = rx2.recv_timeout(Duration::from_millis(800));
+    assert!(res2.is_ok());
+    assert_eq!(res2.unwrap().query_f64("arena.gravity"), Some(15.0));
+
+    // file1 should not have received anything
+    assert!(rx1.try_recv().is_err());
+
+    let _ = fs::remove_file(file1);
+    let _ = fs::remove_file(file2);
+}
+
+
