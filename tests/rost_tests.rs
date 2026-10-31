@@ -587,3 +587,18 @@ fn test_list_and_enum_splitting_respects_quotes_and_nesting() {
     assert_eq!(t.query_list_item("tags", 2), Some("rgba(1, 2, 3)"));
     assert_eq!(t.query_enum("mode"), Some(vec!["\"a, b\"", "idle"]));
 }
+
+#[test]
+fn test_line_numbers_survive_multiline_strings() {
+    let t = Template::from_str(
+        "a: \"one\ntwo\"\n@doc \"x\ny\"\n##sub\n\"p\nq\"\nb: 1\n",
+    );
+    assert_eq!(t.get("a").unwrap().line(), 1);
+    assert_eq!(t.get("doc").unwrap().line(), 3);
+    assert_eq!(t.get("sub").unwrap().line(), 6);
+    assert_eq!(t.get("b").unwrap().line(), 8);
+
+    let t = Template::from_str("x: 1\ny: 2\n");
+    assert_eq!(t.get("x").unwrap().line(), 1);
+    assert_eq!(t.get("y").unwrap().line(), 2);
+}

@@ -167,6 +167,7 @@ pub fn parse_into_bytecode(raw: &[u8]) -> Vec<u8> {
                     i = val_start + quote_end + 1;
 
                     emit_directive(&mut fields, name_off, name_len, val_off, val_len, line);
+                    line += count_newlines(&raw[val_start..val_start + quote_end]);
                 } else {
                     i = val_start;
                 }
@@ -203,9 +204,11 @@ pub fn parse_into_bytecode(raw: &[u8]) -> Vec<u8> {
                     if let Some(quote_end) = find_unescaped_quote(&raw[val_start..]) {
                         let val_off = val_start as u32;
                         let val_len = quote_end as u32;
+                        line += count_newlines(&raw[i..val_start]);
                         i = val_start + quote_end + 1;
 
                         emit_subtitle(&mut fields, name_off, name_len, val_off, val_len, line);
+                        line += count_newlines(&raw[val_start..val_start + quote_end]);
                     } else {
                         i = val_start;
                     }
@@ -276,6 +279,7 @@ pub fn parse_into_bytecode(raw: &[u8]) -> Vec<u8> {
                         i = val_start + quote_end + 1;
 
                         emit_property(&mut fields, key_off, key_len, val_off, val_len, line);
+                        line += count_newlines(&raw[val_start..val_start + quote_end]);
                     } else {
                         i = val_start;
                     }
@@ -283,14 +287,12 @@ pub fn parse_into_bytecode(raw: &[u8]) -> Vec<u8> {
                     let val_start = i;
                     // SIMD accelerated search for next property delimiter (\n, ,, })
                     let (val_end, next_i) = if let Some(delim_pos) = find_value_end(raw, i) {
-                        let delim = raw[delim_pos];
-                        if delim == b'\n' {
-                            line += 1;
-                            (delim_pos, delim_pos + 1)
-                        } else if delim == b',' || delim == b';' {
+                        if raw[delim_pos] == b',' {
                             (delim_pos, delim_pos + 1)
                         } else {
-                            (delim_pos, delim_pos) // preserve '}' for block close
+                            // Leave '\n' for the whitespace skipper (which counts the line
+                            // after this property is emitted) and '}' for the block close.
+                            (delim_pos, delim_pos)
                         }
                     } else {
                         (len, len)
@@ -309,7 +311,7 @@ pub fn parse_into_bytecode(raw: &[u8]) -> Vec<u8> {
                 let body_start = i;
                 if let Some(end_bar) = memchr(b'|', &raw[i..]) {
                     let body_slice = &raw[body_start..body_start + end_bar];
-                    line += memchr::Memchr::new(b'\n', body_slice).count() as u32;
+                    line += count_newlines(body_slice);
 
                     let body_off = body_start as u32;
                     let body_len = end_bar as u32;
@@ -527,6 +529,13 @@ fn emit_var_func(buf: &mut Vec<u8>, k_off: u32, k_len: u32, expr_off: u32, expr_
         std::ptr::copy_nonoverlapping(expr_len.to_le_bytes().as_ptr(), ptr.add(13), 4);
         buf.set_len(len + REC_BINDING);
     }
+}
+
+/// Counts `\n` bytes using SIMD acceleration, to keep line numbers accurate across
+/// multi-line tokens.
+#[inline(always)]
+fn count_newlines(slice: &[u8]) -> u32 {
+    memchr::Memchr::new(b'\n', slice).count() as u32
 }
 
 /// Trims trailing whitespace characters without scanning from start.
