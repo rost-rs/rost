@@ -498,3 +498,16 @@ fn test_u32_overflow_is_rejected() {
     let t = Template::from_str("n: 4294967297\n");
     assert_eq!(t.query_hex("n"), None);
 }
+
+#[test]
+fn test_hex_colors_keep_alpha_channel() {
+    let t = Template::from_str("#c {\n rgba: #11223344\n short: #f00a\n rgb: #1e1e2e\n hex: 0xAABBCCDD\n bad: #1122334g\n}\n");
+    assert_eq!(t.query_hex("c.rgba"), Some(0x11223344));
+    assert_eq!(t.query_hex("c.short"), Some(0xff0000aa));
+    assert_eq!(t.query_hex("c.rgb"), Some(0x1e1e2e));
+    assert_eq!(t.query_hex("c.hex"), Some(0xaabbccdd));
+    assert_eq!(t.query_hex("c.bad"), None);
+    let obj = t.to_obj("c").expect("block c");
+    assert_eq!(obj.hex("rgba"), Some(0x11223344));
+    assert_eq!(obj.hex("bad"), None);
+}

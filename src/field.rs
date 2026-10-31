@@ -73,6 +73,42 @@ pub const HEX_LUT: [u8; 256] = {
     lut
 };
 
+/// Decodes hex digits (without the `#` / `0x` prefix) into a `u32`.
+///
+/// Color shorthands `RGB` / `RGBA` expand each digit (`f` → `ff`), and `RRGGBBAA` keeps
+/// the alpha channel in the low byte (`0xRRGGBBAA`). Other lengths are read as a plain
+/// hexadecimal number.
+///
+/// # Examples
+///
+/// ```
+/// use rost::field::parse_hex_digits;
+///
+/// assert_eq!(parse_hex_digits(b"1e1e2e"), Some(0x1e1e2e));
+/// assert_eq!(parse_hex_digits(b"11223344"), Some(0x11223344));
+/// assert_eq!(parse_hex_digits(b"fff"), Some(0xffffff));
+/// assert_eq!(parse_hex_digits(b"f00a"), Some(0xff0000aa));
+/// ```
+pub fn parse_hex_digits(hex: &[u8]) -> Option<u32> {
+    let len = hex.len();
+    if !matches!(len, 3 | 4 | 6 | 8) {
+        return u32::from_str_radix(std::str::from_utf8(hex).ok()?, 16).ok();
+    }
+    let mut acc = 0u32;
+    for &b in hex {
+        let nibble = HEX_LUT[b as usize];
+        if nibble == 0xFF {
+            return None;
+        }
+        acc = if len <= 4 {
+            (acc << 8) | (nibble as u32 * 17)
+        } else {
+            (acc << 4) | nibble as u32
+        };
+    }
+    Some(acc)
+}
+
 /// High-throughput scalar parser for hexadecimal colors or unsigned integers without heap allocations.
 #[inline(always)]
 pub fn parse_fast_u32(raw: &str) -> Option<u32> {
@@ -91,71 +127,9 @@ pub fn parse_fast_u32(raw: &str) -> Option<u32> {
     }
 
     if slice[0] == b'#' {
-        let hex = &slice[1..];
-        if hex.len() == 6 {
-            let h0 = HEX_LUT[hex[0] as usize];
-            let h1 = HEX_LUT[hex[1] as usize];
-            let h2 = HEX_LUT[hex[2] as usize];
-            let h3 = HEX_LUT[hex[3] as usize];
-            let h4 = HEX_LUT[hex[4] as usize];
-            let h5 = HEX_LUT[hex[5] as usize];
-            if (h0 | h1 | h2 | h3 | h4 | h5) != 0xFF {
-                return Some(((h0 as u32) << 20) | ((h1 as u32) << 16) | ((h2 as u32) << 12) | ((h3 as u32) << 8) | ((h4 as u32) << 4) | (h5 as u32));
-            }
-        } else if hex.len() == 8 {
-            let h0 = HEX_LUT[hex[0] as usize];
-            let h1 = HEX_LUT[hex[1] as usize];
-            let h2 = HEX_LUT[hex[2] as usize];
-            let h3 = HEX_LUT[hex[3] as usize];
-            let h4 = HEX_LUT[hex[4] as usize];
-            let h5 = HEX_LUT[hex[5] as usize];
-            if (h0 | h1 | h2 | h3 | h4 | h5) != 0xFF {
-                return Some(((h0 as u32) << 20) | ((h1 as u32) << 16) | ((h2 as u32) << 12) | ((h3 as u32) << 8) | ((h4 as u32) << 4) | (h5 as u32));
-            }
-        } else if hex.len() == 3 {
-            let h0 = HEX_LUT[hex[0] as usize];
-            let h1 = HEX_LUT[hex[1] as usize];
-            let h2 = HEX_LUT[hex[2] as usize];
-            if (h0 | h1 | h2) != 0xFF {
-                return Some(((h0 as u32 * 17) << 16) | ((h1 as u32 * 17) << 8) | (h2 as u32 * 17));
-            }
-        }
-        if let Ok(s) = std::str::from_utf8(hex) {
-            return u32::from_str_radix(s, 16).ok();
-        }
-    } else if slice.len() > 2 && (slice[0] == b'0' && (slice[1] == b'x' || slice[1] == b'X')) {
-        let hex = &slice[2..];
-        if hex.len() == 6 {
-            let h0 = HEX_LUT[hex[0] as usize];
-            let h1 = HEX_LUT[hex[1] as usize];
-            let h2 = HEX_LUT[hex[2] as usize];
-            let h3 = HEX_LUT[hex[3] as usize];
-            let h4 = HEX_LUT[hex[4] as usize];
-            let h5 = HEX_LUT[hex[5] as usize];
-            if (h0 | h1 | h2 | h3 | h4 | h5) != 0xFF {
-                return Some(((h0 as u32) << 20) | ((h1 as u32) << 16) | ((h2 as u32) << 12) | ((h3 as u32) << 8) | ((h4 as u32) << 4) | (h5 as u32));
-            }
-        } else if hex.len() == 8 {
-            let h0 = HEX_LUT[hex[0] as usize];
-            let h1 = HEX_LUT[hex[1] as usize];
-            let h2 = HEX_LUT[hex[2] as usize];
-            let h3 = HEX_LUT[hex[3] as usize];
-            let h4 = HEX_LUT[hex[4] as usize];
-            let h5 = HEX_LUT[hex[5] as usize];
-            if (h0 | h1 | h2 | h3 | h4 | h5) != 0xFF {
-                return Some(((h0 as u32) << 20) | ((h1 as u32) << 16) | ((h2 as u32) << 12) | ((h3 as u32) << 8) | ((h4 as u32) << 4) | (h5 as u32));
-            }
-        } else if hex.len() == 3 {
-            let h0 = HEX_LUT[hex[0] as usize];
-            let h1 = HEX_LUT[hex[1] as usize];
-            let h2 = HEX_LUT[hex[2] as usize];
-            if (h0 | h1 | h2) != 0xFF {
-                return Some(((h0 as u32 * 17) << 16) | ((h1 as u32 * 17) << 8) | (h2 as u32 * 17));
-            }
-        }
-        if let Ok(s) = std::str::from_utf8(hex) {
-            return u32::from_str_radix(s, 16).ok();
-        }
+        return parse_hex_digits(&slice[1..]);
+    } else if slice.len() > 2 && slice[0] == b'0' && (slice[1] == b'x' || slice[1] == b'X') {
+        return parse_hex_digits(&slice[2..]);
     } else {
         let mut val = 0u32;
         for &b in slice {

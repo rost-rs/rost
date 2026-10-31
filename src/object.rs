@@ -72,19 +72,7 @@ impl RostObject {
     pub fn hex(&self, key: &str) -> Option<u32> {
         let s = self.get(key)?.trim();
         let hex = s.strip_prefix('#').or_else(|| s.strip_prefix("0x")).unwrap_or(s);
-        if hex.len() == 3 {
-            let r = u32::from_str_radix(&hex[0..1], 16).ok()?;
-            let g = u32::from_str_radix(&hex[1..2], 16).ok()?;
-            let b = u32::from_str_radix(&hex[2..3], 16).ok()?;
-            return Some(((r * 17) << 16) | ((g * 17) << 8) | (b * 17));
-        }
-        if hex.len() == 8 {
-            let r = u32::from_str_radix(&hex[0..2], 16).ok()?;
-            let g = u32::from_str_radix(&hex[2..4], 16).ok()?;
-            let b = u32::from_str_radix(&hex[4..6], 16).ok()?;
-            return Some((r << 16) | (g << 8) | b);
-        }
-        u32::from_str_radix(hex, 16).ok()
+        crate::field::parse_hex_digits(hex.as_bytes())
     }
 
     /// Retrieves and parses a property as a dimension/float (`f32`).
