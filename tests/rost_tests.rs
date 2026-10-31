@@ -492,3 +492,10 @@ fn test_diagnostics_unterminated_strings() {
     let src = b"a: 1\nname: \"broken\nb: 2\n";
     assert_eq!(rost::parser::parse_with_diagnostics(src).0, rost::parser::parse_into_bytecode(src));
 }
+
+#[test]
+fn test_diagnostics_unterminated_enums_and_lists() {
+    assert_eq!(diagnostics("state | idle, hover\n"), ["1:7: unterminated enum: missing closing `|`"]);
+    assert_eq!(diagnostics("a: 1\ninv [ \"spear\", [x]\n"), ["2:5: unterminated list: missing closing `]`"]);
+    assert!(diagnostics("inv [ a, [b, c] ]\nstate | a,\n b |\n").is_empty());
+}

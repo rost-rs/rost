@@ -352,6 +352,7 @@ fn scan<D: Diagnostics>(raw: &[u8], diag: &mut D) -> Vec<u8> {
 
                     emit_enum(&mut fields, key_off, key_len, body_off, body_len, start_line, end_line);
                 } else {
+                    diag.report(ParseErrorKind::UnterminatedEnum, body_start - 1..line_end(raw, body_start));
                     i = len;
                 }
             }
@@ -370,6 +371,9 @@ fn scan<D: Diagnostics>(raw: &[u8], diag: &mut D) -> Vec<u8> {
                         _ => {}
                     }
                     i += 1;
+                }
+                if depth > 0 {
+                    diag.report(ParseErrorKind::UnterminatedList, body_start - 1..line_end(raw, body_start));
                 }
                 let body_end = i.saturating_sub(1);
                 let body_off = body_start as u32;
