@@ -181,7 +181,64 @@ impl Template {
         }
     }
 
-    /// Creates and parses a [`Template`] from a string slice.
+    /// Parses a document strictly, failing on the first malformed construct.
+    ///
+    /// Use this for configuration and data you want validated: unterminated strings,
+    /// enums or lists, unbalanced braces, keys without an operator and duplicate keys are
+    /// all rejected with a [`ParseError`] pointing at the exact line and column.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rost::Template;
+    ///
+    /// let ok = Template::parse("#window { width: 500px }").unwrap();
+    /// assert_eq!(ok.query_dim("window.width"), Some(500.0));
+    ///
+    /// let src = "#window {\n    width 500px\n}";
+    /// let err = Template::parse(src).unwrap_err();
+    /// assert_eq!(err.to_string(), "2:5: expected `:`, `=`, `|`, `[` or `{` after key");
+    /// eprintln!("{}", err.render(src));
+    /// ```
+    pub fn parse(src: &str) -> Result<Self, ParseError> {
+        let (fields, errors) = parser::parse_with_diagnostics(src.as_bytes());
+        if let Some(first) = errors.into_iter().min_by_key(|e| e.span.start) {
+            return Err(first);
+        }
+        Ok(Self {
+            path: PathBuf::new(),
+            data: src.as_bytes().to_vec(),
+            fields,
+            watcher: None,
+        })
+    }
+
+    /// Parses a document leniently: never fails, silently skipping malformed constructs.
+    ///
+    /// Equivalent to [`Template::from_str`]; prefer [`Template::parse`] unless you need
+    /// best-effort reading of partially broken input (e.g. while a file is being edited).
+    pub fn parse_lenient(src: &str) -> Self {
+        Self::from_str(src)
+    }
+
+    /// Returns every diagnostic for `src`, ordered by position (empty when well-formed).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rost::Template;
+    ///
+    /// let errors = Template::check("a: 1\na: 2\n}\n");
+    /// assert_eq!(errors.len(), 2);
+    /// assert_eq!(errors[0].line, 2);
+    /// ```
+    pub fn check(src: &str) -> Vec<ParseError> {
+        let mut errors = parser::parse_with_diagnostics(src.as_bytes()).1;
+        errors.sort_by_key(|e| e.span.start);
+        errors
+    }
+
+    /// Creates and parses a [`Template`] from a string slice (lenient, see [`Template::parse_lenient`]).
     #[allow(clippy::should_implement_trait)]
     pub fn from_str(content: &str) -> Self {
         Self::from_bytes(content.as_bytes().to_vec())

@@ -531,3 +531,22 @@ fn test_diagnostics_duplicate_keys() {
     // Same key in different scopes, or after a scope closes, is fine.
     assert!(diagnostics("w: 1\n#a { w: 2 }\n#b { w: 3, inner { w: 4 } }\n").is_empty());
 }
+
+#[test]
+fn test_strict_parse_api() {
+    let t = Template::parse("@theme \"dark\"\n#btn { w: 10px }\n").expect("well-formed");
+    assert_eq!(t.get_directive("theme"), Some("dark"));
+    assert_eq!(t.query_dim("btn.w"), Some(10.0));
+
+    // The first error by position is returned, even if reported later (unclosed block).
+    let err = Template::parse("#a {\n x: 1\n x: 2\n").unwrap_err();
+    assert_eq!(err.kind, rost::ParseErrorKind::UnclosedBlock);
+    assert_eq!((err.line, err.column), (1, 2));
+
+    let all = Template::check("#a {\n x: 1\n x: 2\n");
+    assert_eq!(all.len(), 2);
+    assert_eq!(all[1].kind, rost::ParseErrorKind::DuplicateKey("x".into()));
+
+    // Lenient parsing still accepts the same input.
+    assert_eq!(Template::parse_lenient("#a {\n x: 1\n").query_i64("a.x"), Some(1));
+}
