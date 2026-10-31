@@ -4,7 +4,7 @@
 //! for `.rost` documents. It transforms arbitrary `.rost` text into a compact
 //! binary offset arena (`Vec<u8>`) at sustained throughputs exceeding 500 MB/s.
 
-use memchr::{memchr, memchr2, memchr3};
+use memchr::{memchr, memchr2};
 use std::collections::HashSet;
 use std::ops::Range;
 
@@ -393,7 +393,7 @@ fn scan<D: Diagnostics>(raw: &[u8], diag: &mut D) -> Vec<u8> {
                     if let Some(body_len) = memchr::memmem::find(&raw[val_start..], RAW_QUOTE) {
                         check_duplicate(diag, &mut scopes, raw, key_start..key_start + key_len as usize);
                         emit_property(&mut fields, key_off, key_len, val_start as u32, body_len as u32, line);
-                        line += memchr::Memchr::new(b'\n', &raw[val_start..val_start + body_len]).count() as u32;
+                        line += count_newlines(&raw[val_start..val_start + body_len]);
                         i = val_start + body_len + RAW_QUOTE.len();
                     } else {
                         diag.report(ParseErrorKind::UnterminatedString, i..len);
@@ -687,7 +687,11 @@ fn emit_var_func(buf: &mut Vec<u8>, k_off: u32, k_len: u32, expr_off: u32, expr_
 /// multi-line tokens.
 #[inline(always)]
 fn count_newlines(slice: &[u8]) -> u32 {
-    memchr::Memchr::new(b'\n', slice).count() as u32
+    // Most tokens are single-line: one search answers that before building an iterator.
+    match memchr(b'\n', slice) {
+        None => 0,
+        Some(first) => 1 + memchr::Memchr::new(b'\n', &slice[first + 1..]).count() as u32,
+    }
 }
 
 /// Trims trailing whitespace characters without scanning from start.
@@ -739,14 +743,38 @@ pub(crate) fn resolve_slice<'a>(data: &'a [u8], fields: &[u8], idx: usize) -> &'
 /// position of the delimiter, or `None` if the value runs to the end of the buffer.
 #[inline(always)]
 fn find_value_end(raw: &[u8], start: usize) -> Option<usize> {
-    let candidate = memchr3(b'\n', b',', b'}', &raw[start..]).map(|p| start + p);
-    let scan_end = candidate.unwrap_or(raw.len());
-    // Fast path: nothing that could nest a delimiter appears before the candidate.
-    let nested = match memchr3(b'(', b'[', b'"', &raw[start..scan_end]) {
-        Some(p) => start + p,
-        None => return candidate,
-    };
+    // Values are usually a handful of bytes, so one LUT-driven byte loop beats
+    // setting up SIMD searches per value.
+    let mut i = start;
+    while i < raw.len() {
+        match VALUE_LUT[raw[i] as usize] {
+            0 => i += 1,
+            VALUE_END => return Some(i),
+            _ => return find_nested_value_end(raw, i),
+        }
+    }
+    None
+}
 
+/// Byte class for [`find_value_end`]: a delimiter that ends the value.
+const VALUE_END: u8 = 1;
+/// Byte class for [`find_value_end`]: a byte that may nest delimiters.
+const VALUE_NEST: u8 = 2;
+
+const VALUE_LUT: [u8; 256] = {
+    let mut table = [0u8; 256];
+    table[b'\n' as usize] = VALUE_END;
+    table[b',' as usize] = VALUE_END;
+    table[b'}' as usize] = VALUE_END;
+    table[b'(' as usize] = VALUE_NEST;
+    table[b'[' as usize] = VALUE_NEST;
+    table[b'"' as usize] = VALUE_NEST;
+    table
+};
+
+/// Slow path of [`find_value_end`] from the first `(`, `[` or `"` of a value.
+#[cold]
+fn find_nested_value_end(raw: &[u8], nested: usize) -> Option<usize> {
     let mut depth: u32 = 0;
     let mut i = nested;
     while i < raw.len() {
