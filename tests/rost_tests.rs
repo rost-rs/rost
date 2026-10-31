@@ -602,3 +602,25 @@ fn test_line_numbers_survive_multiline_strings() {
     assert_eq!(t.get("x").unwrap().line(), 1);
     assert_eq!(t.get("y").unwrap().line(), 2);
 }
+
+#[test]
+fn test_patch_value_cannot_inject_structure() {
+    let mut t = Template::from_str("name: x\nsafe: 1\n");
+    assert!(t.patch_value("name", "a\nevil: 1"));
+    assert_eq!(t.get_value("evil"), None);
+    assert_eq!(t.get_value("name"), Some("a\nevil: 1"));
+    assert_eq!(t.get_value("safe"), Some("1"));
+
+    assert!(t.patch_value("safe", "1, hacked: true }"));
+    assert_eq!(t.get_value("hacked"), None);
+    assert_eq!(t.get_value("safe"), Some("1, hacked: true }"));
+
+    let mut t = Template::from_str("title: \"old\"\nnext: 2\n");
+    assert!(t.patch_value("title", "say \"hi\""));
+    assert_eq!(t.get_value("next"), Some("2"));
+    assert_eq!(t.as_str(), "title: \"say \\\"hi\\\"\"\nnext: 2\n");
+
+    let mut t = Template::from_str("bg: red\n");
+    assert!(t.patch_value("bg", "rgba(1, 2, 3)"));
+    assert_eq!(t.as_str(), "bg: rgba(1, 2, 3)\n");
+}
