@@ -62,7 +62,61 @@ assert_eq!(blocks[0].name, "button.primary");
 assert_eq!(blocks[0].get_value("width"), Some("140px"));
 ```
 
-### 2. Programmatic Document Building
+### 2. Strict Parsing and Diagnostics
+
+`Template::parse` validates the document and points at the exact problem;
+`Template::from_str` / `parse_lenient` keep best-effort reading for files being edited.
+
+```rust
+use rost::Template;
+
+let src = "#window {\n    width 500px\n}";
+let err = Template::parse(src).unwrap_err();
+assert_eq!(err.to_string(), "2:5: expected `:`, `=`, `|`, `[` or `{` after key");
+eprintln!("{}", err.render(src));
+// error: 2:5: expected `:`, `=`, `|`, `[` or `{` after key
+//   |
+// 2 |     width 500px
+//   |     ^^^^^
+```
+
+Detected: unterminated strings / enums / lists, unbalanced braces, keys without an
+operator and duplicate keys. `Template::check` returns every diagnostic at once.
+
+### 3. Typed Values, Escapes and Raw Strings
+
+Bare tokens are typed by shape; quoted strings always stay strings and support escapes;
+`"""..."""` holds raw multi-line text.
+
+```rust
+use rost::{Scalar, Template};
+
+let t = Template::parse(r#"
+#player {
+    hp: 100
+    speed: 3.5
+    tint: #ff0000
+    width: 12px
+    id: "007"
+    motto: "never \"yield\"\n"
+    bio: """
+Raw text with "quotes" and {braces}.
+"""
+    pet: null
+}
+"#).unwrap();
+
+assert_eq!(t.query_scalar("player.hp"), Some(Scalar::Int(100)));
+assert_eq!(t.query_scalar("player.tint"), Some(Scalar::Color(0xff0000)));
+assert_eq!(t.query_scalar("player.id"), Some(Scalar::Str("007".into())));
+assert_eq!(t.query_string("player.motto").as_deref(), Some("never \"yield\"\n"));
+assert_eq!(t.query_scalar("player.pet"), Some(Scalar::Null));
+```
+
+With the `serde` feature, top-level properties, escapes and `null` (→ `None`) map
+straight onto your structs via `rost::from_template` / `Template::deserialize`.
+
+### 4. Programmatic Document Building
 
 ```rust
 use rost::RostBuilder;
