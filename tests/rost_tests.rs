@@ -511,3 +511,17 @@ fn test_hex_colors_keep_alpha_channel() {
     assert_eq!(obj.hex("rgba"), Some(0x11223344));
     assert_eq!(obj.hex("bad"), None);
 }
+
+#[test]
+fn test_float_parsing_is_correctly_rounded() {
+    use rost::field::{parse_fast_f32, parse_fast_f64};
+    assert_eq!(parse_fast_f64("0.1"), Some(0.1));
+    assert_eq!(parse_fast_f64("0.3"), Some(0.3));
+    assert_eq!(parse_fast_f64("2.2250738585072014e-308"), Some(2.2250738585072014e-308));
+    assert_eq!(parse_fast_f64("-16777217"), Some(-16777217.0));
+    assert_eq!(parse_fast_f32("0.1"), Some(0.1f32));
+    assert_eq!(parse_fast_f32("1.5rem"), Some(1.5));
+    assert_eq!(parse_fast_f32("75%"), Some(75.0));
+    assert_eq!(parse_fast_f32("abc"), None);
+    assert_eq!(parse_fast_f32(""), None);
+}

@@ -144,63 +144,65 @@ pub fn parse_fast_u32(raw: &str) -> Option<u32> {
     None
 }
 
+/// Strips surrounding whitespace, trailing `;`, and unit suffixes (`px`, `%`, …) from a
+/// numeric literal.
+#[inline(always)]
+fn numeric_slice(raw: &str) -> &str {
+    raw.trim_matches(|c: char| c == ' ' || c == '\t')
+        .trim_end_matches(|c: char| c == ' ' || c == '\t' || c == ';' || c == '%' || c.is_ascii_alphabetic())
+}
+
+/// Parses a short, unsigned-or-signed integer literal exactly, without float rounding.
+///
+/// Returns `None` for anything that is not a plain integer of at most `max_digits` digits.
+#[inline(always)]
+fn parse_small_int(s: &str, max_digits: usize) -> Option<i64> {
+    let (negative, digits) = match s.as_bytes().first()? {
+        b'-' => (true, &s[1..]),
+        b'+' => (false, &s[1..]),
+        _ => (false, s),
+    };
+    if digits.is_empty() || digits.len() > max_digits || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let val = digits.bytes().fold(0i64, |acc, b| acc * 10 + (b - b'0') as i64);
+    Some(if negative { -val } else { val })
+}
+
 /// Fast float parser extracting the numeric prefix without allocating strings.
+///
+/// Integers that fit the `f32` mantissa take an exact fast path; everything else is
+/// delegated to the correctly rounded standard library parser.
 #[inline(always)]
 pub fn parse_fast_f32(raw: &str) -> Option<f32> {
-    let bytes = raw.as_bytes();
-    let mut start = 0;
-    while start < bytes.len() && (bytes[start] == b' ' || bytes[start] == b'\t') {
-        start += 1;
+    let s = numeric_slice(raw);
+    if let Some(i) = parse_small_int(s, 7) {
+        return Some(i as f32);
     }
-    let mut end = bytes.len();
-    while end > start && (bytes[end - 1] == b' ' || bytes[end - 1] == b'\t' || bytes[end - 1] == b';' || bytes[end - 1].is_ascii_alphabetic() || bytes[end - 1] == b'%') {
-        end -= 1;
-    }
-    let slice = &bytes[start..end];
-    if slice.is_empty() {
-        return None;
-    }
+    s.parse::<f32>().ok()
+}
 
-    let mut i = 0;
-    let mut negative = false;
-    if slice[0] == b'-' {
-        negative = true;
-        i += 1;
-    } else if slice[0] == b'+' {
-        i += 1;
+/// Fast `f64` parser extracting the numeric prefix without allocating strings.
+///
+/// Integers that fit the `f64` mantissa take an exact fast path; everything else is
+/// delegated to the correctly rounded standard library parser.
+///
+/// # Examples
+///
+/// ```
+/// use rost::field::parse_fast_f64;
+///
+/// assert_eq!(parse_fast_f64("3.141592653589793"), Some(std::f64::consts::PI));
+/// assert_eq!(parse_fast_f64("120px"), Some(120.0));
+/// assert_eq!(parse_fast_f64("-0.5;"), Some(-0.5));
+/// ```
+#[inline(always)]
+pub fn parse_fast_f64(raw: &str) -> Option<f64> {
+    let s = numeric_slice(raw);
+    if let Some(i) = parse_small_int(s, 15) {
+        return Some(i as f64);
     }
-
-    let mut int_part: u64 = 0;
-    let mut has_digits = false;
-    while i < slice.len() && slice[i] >= b'0' && slice[i] <= b'9' {
-        int_part = int_part * 10 + (slice[i] - b'0') as u64;
-        has_digits = true;
-        i += 1;
-    }
-
-    let mut val = int_part as f64;
-    if i < slice.len() && slice[i] == b'.' {
-        i += 1;
-        let mut div = 1.0f64;
-        while i < slice.len() && slice[i] >= b'0' && slice[i] <= b'9' {
-            div *= 10.0;
-            val += ((slice[i] - b'0') as f64) / div;
-            has_digits = true;
-            i += 1;
-        }
-    }
-
-    if !has_digits {
-        return None;
-    }
-
-    if i < slice.len() {
-        let s = std::str::from_utf8(slice).ok()?;
-        return s.parse::<f32>().ok();
-    }
-
-    let res = if negative { -val as f32 } else { val as f32 };
-    Some(res)
+    s.parse::<f64>().ok()
 }
 
 /// Represents an individual field or syntactic node extracted from a `.rost` document.
