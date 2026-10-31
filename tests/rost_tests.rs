@@ -525,3 +525,39 @@ fn test_float_parsing_is_correctly_rounded() {
     assert_eq!(parse_fast_f32("abc"), None);
     assert_eq!(parse_fast_f32(""), None);
 }
+
+#[cfg(feature = "serde")]
+#[test]
+fn test_serde_numbers_are_not_narrowed() {
+    use serde::Deserialize;
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct Numbers {
+        big: u64,
+        neg: i64,
+        pi: f64,
+        small: i8,
+        color: u32,
+    }
+
+    let tmpl = Template::from_str(
+        "#n {\n big: 5000000000\n neg: -16777217\n pi: 3.141592653589793\n small: -12\n color: #ff0000\n}\n",
+    );
+    let n: Numbers = tmpl.deserialize("n").expect("deserialize numbers");
+    assert_eq!(
+        n,
+        Numbers { big: 5_000_000_000, neg: -16_777_217, pi: std::f64::consts::PI, small: -12, color: 0xff0000 }
+    );
+
+    #[derive(Debug, Deserialize)]
+    #[allow(dead_code)]
+    struct Tiny {
+        v: u8,
+    }
+    let tmpl = Template::from_str("#t { v: 300 }");
+    assert!(tmpl.deserialize::<Tiny>("t").is_err());
+    let tmpl = Template::from_str("#t { v: 1.5 }");
+    assert!(tmpl.deserialize::<Tiny>("t").is_err());
+    let tmpl = Template::from_str("#t { v: 0xff }");
+    assert_eq!(tmpl.deserialize::<Tiny>("t").expect("hex u8").v, 0xff);
+}

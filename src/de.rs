@@ -35,7 +35,37 @@ impl de::Error for DeError {
 fn strip_hash(s: &str) -> &str {
     s.strip_prefix('#').unwrap_or(s)
 }
-use super::field::{parse_fast_f32, parse_fast_u32};
+use super::field::{parse_fast_f32, parse_fast_f64, parse_fast_u32};
+
+/// Parses an integer literal of any width without narrowing through `u32`/`f32`.
+///
+/// Accepts decimal values with an optional unit suffix (`42`, `-7`, `120px`) and hex
+/// literals (`#ff0000`, `0xff`). Returns `None` when the value does not fit `T`.
+fn parse_integer<T: TryFrom<i128>>(value: &str) -> Option<T> {
+    let raw = value.trim().trim_end_matches(';');
+    if raw.starts_with('#') || raw.starts_with("0x") || raw.starts_with("0X") {
+        return parse_fast_u32(raw).and_then(|v| T::try_from(v as i128).ok());
+    }
+    let digits = raw.trim_end_matches(|c: char| c == '%' || c.is_ascii_alphabetic());
+    T::try_from(digits.parse::<i128>().ok()?).ok()
+}
+
+macro_rules! deserialize_integers {
+    ($($method:ident => $visit:ident: $ty:ty),* $(,)?) => {$(
+        #[inline]
+        fn $method<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
+            match parse_integer::<$ty>(self.value) {
+                Some(v) => visitor.$visit(v),
+                None => Err(DeError(format!(
+                    "cannot parse '{}' as {}: {}",
+                    self.name,
+                    stringify!($ty),
+                    self.value
+                ))),
+            }
+        }
+    )*};
+}
 
 struct FieldDeserializer<'a> {
     name: &'a str,
@@ -47,13 +77,21 @@ impl<'de, 'a> Deserializer<'de> for FieldDeserializer<'a> {
 
     #[inline]
     fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
-        if let Some(u) = parse_fast_u32(self.value) {
-            return visitor.visit_u32(u);
-        }
-        if let Some(f) = parse_fast_f32(self.value) {
-            return visitor.visit_f32(f);
-        }
         let s = self.value.trim().trim_end_matches(';');
+        if let Ok(v) = s.parse::<u64>() {
+            return visitor.visit_u64(v);
+        }
+        if let Ok(v) = s.parse::<i64>() {
+            return visitor.visit_i64(v);
+        }
+        if s.starts_with('#') || s.starts_with("0x") || s.starts_with("0X") {
+            if let Some(u) = parse_fast_u32(s) {
+                return visitor.visit_u32(u);
+            }
+        }
+        if let Some(f) = parse_fast_f64(s) {
+            return visitor.visit_f64(f);
+        }
         if s == "true" {
             return visitor.visit_bool(true);
         }
@@ -73,42 +111,15 @@ impl<'de, 'a> Deserializer<'de> for FieldDeserializer<'a> {
         }
     }
 
-    #[inline]
-    fn deserialize_u32<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
-        if let Some(v) = parse_fast_u32(self.value) {
-            return visitor.visit_u32(v);
-        }
-        Err(DeError(format!("cannot parse '{}' as u32: {}", self.name, self.value)))
-    }
-
-    #[inline]
-    fn deserialize_u64<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
-        if let Some(v) = parse_fast_u32(self.value) {
-            return visitor.visit_u64(v as u64);
-        }
-        Err(DeError(format!("cannot parse '{}' as u64: {}", self.name, self.value)))
-    }
-
-    #[inline]
-    fn deserialize_i64<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
-        if let Some(v) = parse_fast_u32(self.value) {
-            return visitor.visit_i64(v as i64);
-        }
-        if let Some(f) = parse_fast_f32(self.value) {
-            return visitor.visit_i64(f as i64);
-        }
-        Err(DeError(format!("cannot parse '{}' as i64: {}", self.name, self.value)))
-    }
-
-    #[inline]
-    fn deserialize_i32<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
-        if let Some(v) = parse_fast_u32(self.value) {
-            return visitor.visit_i32(v as i32);
-        }
-        if let Some(f) = parse_fast_f32(self.value) {
-            return visitor.visit_i32(f as i32);
-        }
-        Err(DeError(format!("cannot parse '{}' as i32: {}", self.name, self.value)))
+    deserialize_integers! {
+        deserialize_i8 => visit_i8: i8,
+        deserialize_i16 => visit_i16: i16,
+        deserialize_i32 => visit_i32: i32,
+        deserialize_i64 => visit_i64: i64,
+        deserialize_u8 => visit_u8: u8,
+        deserialize_u16 => visit_u16: u16,
+        deserialize_u32 => visit_u32: u32,
+        deserialize_u64 => visit_u64: u64
     }
 
     #[inline]
@@ -121,8 +132,8 @@ impl<'de, 'a> Deserializer<'de> for FieldDeserializer<'a> {
 
     #[inline]
     fn deserialize_f64<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
-        if let Some(v) = parse_fast_f32(self.value) {
-            return visitor.visit_f64(v as f64);
+        if let Some(v) = parse_fast_f64(self.value) {
+            return visitor.visit_f64(v);
         }
         Err(DeError(format!("cannot parse '{}' as f64: {}", self.name, self.value)))
     }
@@ -145,7 +156,7 @@ impl<'de, 'a> Deserializer<'de> for FieldDeserializer<'a> {
     }
 
     serde::forward_to_deserialize_any! {
-        i8 i16 u8 u16 char bytes byte_buf unit unit_struct newtype_struct seq tuple
+        char bytes byte_buf unit unit_struct newtype_struct seq tuple
         tuple_struct map struct enum identifier ignored_any
     }
 }
