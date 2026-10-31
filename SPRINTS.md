@@ -53,17 +53,20 @@ model is fixed and covered by a regression test.
 
 **Goal:** errors a developer can act on in seconds, and values that carry their type.
 
-- [ ] `ParseError` with line, column, byte span and a human message (`miette`-style snippet behind a feature)
-- [ ] `Template::parse(&str) -> Result<Template, ParseError>`; lenient mode kept as `parse_lenient`
-- [ ] Detect unclosed strings / enums / lists, stray `}`, unclosed blocks, duplicate keys
-- [ ] Typed scalar classification in the lexer: string, int, float, bool, null, color, dimension
-- [ ] String escapes (`\n`, `\t`, `\"`, `\\`, `\u{…}`) and raw / multi-line strings
-- [ ] Scope-correct lookups: top-level `get` only sees depth-0 fields
-- [ ] `from_template` deserializes top-level properties, not only blocks
-- [ ] Bytecode format version byte for forward compatibility
-- [ ] Fuzz targets for the parser and the deserializer (`cargo-fuzz`)
+- [x] `ParseError` with line, column, byte span and a human message (`miette`-style snippet behind a feature)
+- [x] `Template::parse(&str) -> Result<Template, ParseError>`; lenient mode kept as `parse_lenient`
+- [x] Detect unclosed strings / enums / lists, stray `}`, unclosed blocks, duplicate keys
+- [x] Typed scalar classification in the lexer: string, int, float, bool, null, color, dimension
+- [x] String escapes (`\n`, `\t`, `\"`, `\\`, `\u{…}`) and raw / multi-line strings
+- [x] Scope-correct lookups: top-level `get` only sees depth-0 fields
+- [x] `from_template` deserializes top-level properties, not only blocks
+- [x] Fuzz targets for the parser and the deserializer (`cargo-fuzz`)
 
 **Done when:** malformed input never yields a partially-silent template in strict mode.
+
+> The bytecode format version byte moved to Sprint 5, where the precompiled `.rostc`
+> format makes it meaningful. Fuzz targets live in `fuzz/` (`cargo +nightly fuzz run parse`);
+> `tests/robustness.rs` is their always-on stable counterpart.
 
 ## Sprint 3 — Serde, first class (the drop-in experience)
 
@@ -101,6 +104,7 @@ model is fixed and covered by a regression test.
 - [ ] Path index (hash table) built during parsing for `query_*` and `find_block`
 - [ ] Allocation-free typed iterators for lists, enums and blocks
 - [ ] Key interning for repeated names
+- [ ] Bytecode format version byte for forward compatibility (moved from Sprint 2)
 - [ ] `.rostc` precompiled binary (versioned header, checksum), loadable via `mmap`
 - [ ] Document the 4 GiB `u32` offset limit or add `u64` offsets behind a feature
 
