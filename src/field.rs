@@ -237,12 +237,18 @@ pub enum QuoteStyle {
     Bare,
     /// Double-quoted string (`title: "Hello"`); always a string, escapes apply.
     Quoted,
+    /// Raw multi-line string (`body: """..."""`); always a string, taken verbatim.
+    Raw,
 }
 
 impl QuoteStyle {
     /// Classifies the value slice `data[off..off + len]` by inspecting its delimiters.
     #[inline]
     pub(crate) fn detect(data: &[u8], off: usize, len: usize) -> Self {
+        let raw = crate::parser::RAW_QUOTE;
+        if off >= raw.len() && data[off - raw.len()..off] == *raw && data[off + len..].starts_with(raw) {
+            return Self::Raw;
+        }
         if off >= 1 && data.get(off - 1) == Some(&b'"') && data.get(off + len) == Some(&b'"') {
             Self::Quoted
         } else {

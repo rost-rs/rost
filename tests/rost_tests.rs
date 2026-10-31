@@ -560,3 +560,20 @@ fn test_quote_style_is_recorded() {
     assert_eq!(t.get("c").unwrap().quote_style(), Some(QuoteStyle::Quoted));
     assert_eq!(t.get("c").unwrap().value(), Some(""));
 }
+
+#[test]
+fn test_raw_multiline_strings() {
+    use rost::QuoteStyle;
+    let src = "#doc {\n  body: \"\"\"\n  Hello, \"world\" \\n {not a block}\n  \"\"\"\n  empty: \"\"\"\"\"\"\n  after: 1\n}\n";
+    let t = Template::parse(src).expect("raw strings parse strictly");
+    let body = t.query_field("doc.body").unwrap();
+    assert_eq!(body.quote_style(), Some(QuoteStyle::Raw));
+    assert_eq!(body.value(), Some("\n  Hello, \"world\" \\n {not a block}\n  "));
+    assert_eq!(t.query_field("doc.empty").unwrap().quote_style(), Some(QuoteStyle::Raw));
+    assert_eq!(t.query_field("doc.empty").unwrap().value(), Some(""));
+    assert_eq!(t.query_i64("doc.after"), Some(1));
+    assert_eq!(t.query_field("doc.empty").unwrap().line(), 5);
+
+    let err = Template::parse("a: \"\"\"never closed\n").unwrap_err();
+    assert_eq!(err.kind, rost::ParseErrorKind::UnterminatedString);
+}

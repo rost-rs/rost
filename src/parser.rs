@@ -10,6 +10,9 @@ use std::ops::Range;
 
 use crate::error::{ParseError, ParseErrorKind};
 
+/// Delimiter of raw multi-line strings (`"""..."""`).
+pub(crate) const RAW_QUOTE: &[u8] = b"\"\"\"";
+
 /// Tag identifier for top-level `#Section` headers.
 pub const TAG_TITLE: u8 = 0x01;
 /// Tag identifier for secondary `##Section "value"` headers.
@@ -353,7 +356,19 @@ fn scan<D: Diagnostics>(raw: &[u8], diag: &mut D) -> Vec<u8> {
                     i += 1;
                 }
 
-                if i < len && raw[i] == b'"' {
+                if raw[i..].starts_with(RAW_QUOTE) {
+                    // Raw multi-line string: """ ... """ (no escape processing)
+                    let val_start = i + RAW_QUOTE.len();
+                    if let Some(body_len) = memchr::memmem::find(&raw[val_start..], RAW_QUOTE) {
+                        check_duplicate(diag, &mut scopes, raw, key_start..key_start + key_len as usize);
+                        emit_property(&mut fields, key_off, key_len, val_start as u32, body_len as u32, line);
+                        line += memchr::Memchr::new(b'\n', &raw[val_start..val_start + body_len]).count() as u32;
+                        i = val_start + body_len + RAW_QUOTE.len();
+                    } else {
+                        diag.report(ParseErrorKind::UnterminatedString, i..len);
+                        i = len;
+                    }
+                } else if i < len && raw[i] == b'"' {
                     let val_start = i + 1;
                     if let Some(quote_end) = find_unescaped_quote(&raw[val_start..]) {
                         let val_off = val_start as u32;
