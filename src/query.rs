@@ -166,6 +166,11 @@ impl<'a> BlockView<'a> {
             .map(|s| s.trim_matches('"'))
     }
 
+    /// Retrieves a property as a string, decoding escapes in quoted values.
+    pub fn get_string(&self, key: &str) -> Option<std::borrow::Cow<'a, str>> {
+        self.get(key).and_then(|f| f.string_value())
+    }
+
     /// Retrieves and parses a property as a 64-bit signed integer.
     pub fn get_i64(&self, key: &str) -> Option<i64> {
         self.get(key).and_then(|f| f.as_i64())

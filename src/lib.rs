@@ -525,6 +525,20 @@ impl Template {
         }
     }
 
+    /// Queries a string using dot-notation or top-level key, decoding escapes in quoted values.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rost::Template;
+    ///
+    /// let t = Template::parse(r#"#msg { text: "line 1\nline \"2\"" }"#).unwrap();
+    /// assert_eq!(t.query_string("msg.text").as_deref(), Some("line 1\nline \"2\""));
+    /// ```
+    pub fn query_string(&self, path: &str) -> Option<std::borrow::Cow<'_, str>> {
+        self.query_field(path).and_then(|f| f.string_value())
+    }
+
     /// Queries an integer (`i64`) using dot-notation or top-level key.
     pub fn query_i64(&self, path: &str) -> Option<i64> {
         if let Some(val) = self.query_raw_value(path) {

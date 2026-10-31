@@ -229,6 +229,87 @@ pub fn parse_fast_f32(raw: &str) -> Option<f32> {
     Some(res)
 }
 
+/// Decodes backslash escapes in a quoted string value.
+///
+/// Supported: `\n`, `\t`, `\r`, `\0`, `\"`, `\\`, `\/`, `\u{1F600}` (1–6 hex digits) and
+/// JSON-style `\uXXXX` (including surrogate pairs). Unknown or malformed escapes are kept
+/// verbatim. Borrows when there is nothing to decode.
+///
+/// # Examples
+///
+/// ```
+/// use rost::field::unescape;
+///
+/// assert_eq!(unescape(r#"say \"hi\"\n"#), "say \"hi\"\n");
+/// assert_eq!(unescape(r"\u{48}\u0069 \uD83D\uDE00"), "Hi 😀");
+/// assert!(matches!(unescape("plain"), std::borrow::Cow::Borrowed("plain")));
+/// ```
+pub fn unescape(s: &str) -> std::borrow::Cow<'_, str> {
+    use std::borrow::Cow;
+
+    let Some(first) = memchr::memchr(b'\\', s.as_bytes()) else {
+        return Cow::Borrowed(s);
+    };
+    let mut out = String::with_capacity(s.len());
+    out.push_str(&s[..first]);
+    let mut rest = &s[first..];
+    while let Some(pos) = rest.find('\\') {
+        out.push_str(&rest[..pos]);
+        let esc = &rest[pos + 1..];
+        let (decoded, consumed) = decode_escape(esc);
+        match decoded {
+            Some(c) => out.push(c),
+            None => out.push('\\'),
+        }
+        rest = &esc[if decoded.is_some() { consumed } else { 0 }..];
+    }
+    out.push_str(rest);
+    Cow::Owned(out)
+}
+
+/// Decodes one escape (the text right after a backslash): returns the char and the
+/// number of bytes consumed, or `None` when the escape is unknown or malformed.
+fn decode_escape(esc: &str) -> (Option<char>, usize) {
+    let simple = match esc.as_bytes().first() {
+        Some(b'n') => Some('\n'),
+        Some(b't') => Some('\t'),
+        Some(b'r') => Some('\r'),
+        Some(b'0') => Some('\0'),
+        Some(b'"') => Some('"'),
+        Some(b'\\') => Some('\\'),
+        Some(b'/') => Some('/'),
+        _ => None,
+    };
+    if simple.is_some() {
+        return (simple, 1);
+    }
+    if let Some(braced) = esc.strip_prefix("u{") {
+        if let Some(close) = braced.find('}')
+            && (1..=6).contains(&close)
+            && let Ok(code) = u32::from_str_radix(&braced[..close], 16)
+            && let Some(c) = char::from_u32(code)
+        {
+            return (Some(c), close + 3);
+        }
+        return (None, 0);
+    }
+    let hex4 = |s: &str| s.get(..4).and_then(|h| u16::from_str_radix(h, 16).ok());
+    if let Some(digits) = esc.strip_prefix('u')
+        && let Some(hi) = hex4(digits)
+    {
+        if let Some(c) = char::from_u32(hi as u32) {
+            return (Some(c), 5);
+        }
+        // High surrogate: must be followed by `\uXXXX` low surrogate.
+        if let Some(lo) = digits[4..].strip_prefix("\\u").and_then(hex4)
+            && let Some(Ok(c)) = char::decode_utf16([hi, lo]).next()
+        {
+            return (Some(c), 11);
+        }
+    }
+    (None, 0)
+}
+
 /// How a property value was written in the source document.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum QuoteStyle {
@@ -326,6 +407,17 @@ impl<'a> ParsedField<'a> {
         match self {
             ParsedField::CommonText { quote, .. } => Some(*quote),
             _ => None,
+        }
+    }
+
+    /// Returns the value as a string with escapes decoded for quoted values.
+    ///
+    /// Bare and raw values are returned verbatim (borrowed); quoted values go through
+    /// [`unescape`], which only allocates when an escape is present.
+    pub fn string_value(&self) -> Option<std::borrow::Cow<'a, str>> {
+        match self {
+            ParsedField::CommonText { value, quote: QuoteStyle::Quoted, .. } => Some(unescape(value)),
+            _ => self.value().map(std::borrow::Cow::Borrowed),
         }
     }
 

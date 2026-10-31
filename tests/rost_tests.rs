@@ -577,3 +577,19 @@ fn test_raw_multiline_strings() {
     let err = Template::parse("a: \"\"\"never closed\n").unwrap_err();
     assert_eq!(err.kind, rost::ParseErrorKind::UnterminatedString);
 }
+
+#[test]
+fn test_string_escapes_are_decoded() {
+    let src = r#"
+a: "tab\there \"quoted\" back\\slash \u{1F980} é bad\q"
+b: raw\nbare
+c: """raw\n kept"""
+"#;
+    let t = Template::parse(src).unwrap();
+    assert_eq!(t.query_string("a").unwrap(), "tab\there \"quoted\" back\\slash 🦀 é bad\\q");
+    assert_eq!(t.query_string("b").unwrap(), "raw\\nbare");
+    assert_eq!(t.query_string("c").unwrap(), "raw\\n kept");
+    let blocks = Template::parse("#m { s: \"x\\ny\" }").unwrap();
+    assert_eq!(blocks.find_block("m").unwrap().get_string("s").unwrap(), "x\ny");
+    assert_eq!(rost::field::unescape(r"\u{110000} \uD800 end\"), r"\u{110000} \uD800 end\");
+}
