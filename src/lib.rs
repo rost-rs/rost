@@ -148,7 +148,7 @@ impl Template {
     /// Loads a `.rost` document from disk, allowing explicit control over hot-reloading.
     pub fn load_with_options<P: AsRef<Path>>(path: P, hot_reload: bool) -> std::io::Result<Self> {
         let p = path.as_ref();
-        let data = fs::read(p)?;
+        let data = read_utf8(p)?;
         let fields = parser::parse_into_bytecode(&data);
         let watcher = if hot_reload {
             HotReloadWatcher::new(p).ok()
@@ -169,7 +169,19 @@ impl Template {
     }
 
     /// Creates and parses a [`Template`] from an in-memory byte buffer.
-    pub fn from_bytes(data: Vec<u8>) -> Self {
+    ///
+    /// # Errors
+    /// Returns [`std::str::Utf8Error`] if `data` is not valid UTF-8.
+    pub fn from_bytes(data: Vec<u8>) -> Result<Self, std::str::Utf8Error> {
+        std::str::from_utf8(&data)?;
+        Ok(Self::from_utf8_unchecked(data))
+    }
+
+    /// Builds a [`Template`] from bytes the caller has already validated as UTF-8.
+    ///
+    /// Every zero-copy slice handed out by the query engine relies on this invariant.
+    fn from_utf8_unchecked(data: Vec<u8>) -> Self {
+        debug_assert!(std::str::from_utf8(&data).is_ok());
         let fields = parser::parse_into_bytecode(&data);
         Self {
             path: PathBuf::new(),
@@ -182,12 +194,12 @@ impl Template {
     /// Creates and parses a [`Template`] from a string slice.
     #[allow(clippy::should_implement_trait)]
     pub fn from_str(content: &str) -> Self {
-        Self::from_bytes(content.as_bytes().to_vec())
+        Self::from_utf8_unchecked(content.as_bytes().to_vec())
     }
 
     /// Creates and parses a [`Template`] from an owned `String`.
     pub fn from_string(content: String) -> Self {
-        Self::from_bytes(content.into_bytes())
+        Self::from_utf8_unchecked(content.into_bytes())
     }
 
     /// Starts a fluent [`RostBuilder`] to assemble a template.
@@ -197,7 +209,7 @@ impl Template {
 
     /// Reads a file from disk and parses it into data and field offset vectors.
     fn reader(path: &Path) -> (Vec<u8>, Vec<u8>) {
-        let raw = fs::read(path).unwrap_or_default();
+        let raw = read_utf8(path).unwrap_or_default();
         let fields = parser::parse_into_bytecode(&raw);
         (raw, fields)
     }
@@ -560,6 +572,15 @@ impl Template {
     pub fn save<P: AsRef<Path>>(&self, path: P) -> std::io::Result<()> {
         fs::write(path, &self.data)
     }
+}
+
+/// Reads a file and verifies it is valid UTF-8 before it can back a [`Template`].
+pub(crate) fn read_utf8(path: &Path) -> std::io::Result<Vec<u8>> {
+    let data = fs::read(path)?;
+    if let Err(e) = std::str::from_utf8(&data) {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, e));
+    }
+    Ok(data)
 }
 
 impl std::str::FromStr for Template {

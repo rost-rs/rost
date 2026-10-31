@@ -69,7 +69,7 @@ impl CentralWatcher {
                                         // Allow brief grace period for atomic editor file saves
                                         thread::sleep(Duration::from_millis(15));
 
-                                        if let Ok(data) = fs::read(path) {
+                                        if let Ok(data) = super::read_utf8(path) {
                                             let fields = parser::parse_into_bytecode(&data);
                                             let new_template = Template {
                                                 path: path.clone(),

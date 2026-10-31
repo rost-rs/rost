@@ -134,7 +134,7 @@ fn test_high_throughput_speed() {
     let size_mb = bytes.len() as f64 / (1024.0 * 1024.0);
 
     let start = Instant::now();
-    let template = Template::from_bytes(bytes.to_vec());
+    let template = Template::from_bytes(bytes.to_vec()).expect("valid utf-8");
     let elapsed = start.elapsed();
 
     let fields_count = template.iter().count();
@@ -473,3 +473,19 @@ fn test_serde_deserialization() {
 }
 
 
+
+#[test]
+fn test_from_bytes_rejects_invalid_utf8() {
+    assert!(Template::from_bytes(vec![b'k', b':', b' ', 0xff, 0xfe, b'\n']).is_err());
+    let t = Template::from_bytes(b"k: v\n".to_vec()).expect("valid utf-8");
+    assert_eq!(t.get_value("k"), Some("v"));
+}
+
+#[test]
+fn test_load_rejects_invalid_utf8() {
+    let path = std::env::temp_dir().join(format!("rost_invalid_utf8_{}.rost", std::process::id()));
+    std::fs::write(&path, [b'k', b':', b' ', 0xff, b'\n']).unwrap();
+    let err = Template::load_with_options(&path, false).expect_err("invalid utf-8 must fail");
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    let _ = std::fs::remove_file(&path);
+}
