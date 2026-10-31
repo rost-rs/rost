@@ -69,10 +69,10 @@ macro_rules! deserialize_integers {
     )*};
 }
 
-struct FieldDeserializer<'a> {
-    name: &'a str,
-    value: &'a str,
-    quote: QuoteStyle,
+pub(crate) struct FieldDeserializer<'a> {
+    pub(crate) name: &'a str,
+    pub(crate) value: &'a str,
+    pub(crate) quote: QuoteStyle,
 }
 
 impl<'a> FieldDeserializer<'a> {
@@ -194,8 +194,8 @@ impl<'de> Deserializer<'de> for FieldDeserializer<'de> {
 // 2. LIST AND ARRAY DESERIALIZER
 // ==============================================================================
 
-struct RawListDeserializer<'a> {
-    raw: &'a str,
+pub(crate) struct RawListDeserializer<'a> {
+    pub(crate) raw: &'a str,
 }
 
 impl<'de> Deserializer<'de> for RawListDeserializer<'de> {

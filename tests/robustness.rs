@@ -1,5 +1,6 @@
 //! Deterministic stress test: feeds mutated and random documents through every public
-//! entry point and checks that nothing panics and that strict and lenient parsing agree.
+//! entry point and checks that nothing panics, that strict and lenient parsing agree, and
+//! that the single-pass deserializer matches the bytecode one.
 //!
 //! Runs on stable in a few hundred milliseconds; `fuzz/` holds the coverage-guided
 //! equivalents for `cargo +nightly fuzz`.
@@ -86,6 +87,18 @@ fn exercise(src: &str) {
     #[cfg(feature = "serde")]
     {
         let _ = rost::from_template::<std::collections::HashMap<String, String>>(&lenient);
+
+        // The single-pass deserializer accepts every strictly valid document and yields
+        // exactly what the bytecode path yields.
+        let text = rost::from_str::<serde_json::Value>(src);
+        if let Ok(t) = &strict {
+            let tree = rost::from_template::<serde_json::Value>(t);
+            match (&text, &tree) {
+                (Ok(a), Ok(b)) => assert_eq!(a, b, "from_str/from_template disagree on {src:?}"),
+                (Err(e), Ok(_)) => panic!("from_str rejected a valid document {src:?}: {e}"),
+                _ => {}
+            }
+        }
     }
 }
 

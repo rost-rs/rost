@@ -61,7 +61,7 @@ pub const fn record_len(tag: u8) -> usize {
 }
 
 // Fast 256-element lookup table for delimiter detection in 1 CPU cycle
-const IS_DELIM_OR_WS: [bool; 256] = {
+pub(crate) const IS_DELIM_OR_WS: [bool; 256] = {
     let mut table = [false; 256];
     table[b':' as usize] = true;
     table[b'=' as usize] = true;
@@ -780,7 +780,7 @@ fn count_newlines(slice: &[u8]) -> u32 {
 
 /// Trims trailing whitespace characters without scanning from start.
 #[inline(always)]
-fn trim_trailing_ws(data: &[u8], start: usize, mut end: usize) -> usize {
+pub(crate) fn trim_trailing_ws(data: &[u8], start: usize, mut end: usize) -> usize {
     while end > start {
         let b = data[end - 1];
         if b == b' ' || b == b'\t' || b == b'\r' || b == b';' || b == b',' {
@@ -826,7 +826,7 @@ pub(crate) fn resolve_slice<'a>(data: &'a [u8], fields: &[u8], idx: usize) -> &'
 /// (`rgba(1, 2, 3)`, `url("a,b")`); a newline always terminates it. Returns the absolute
 /// position of the delimiter, or `None` if the value runs to the end of the buffer.
 #[inline(always)]
-fn find_value_end(raw: &[u8], start: usize) -> Option<usize> {
+pub(crate) fn find_value_end(raw: &[u8], start: usize) -> Option<usize> {
     // Values are usually a handful of bytes, so one LUT-driven byte loop beats
     // setting up SIMD searches per value.
     let mut i = start;
@@ -880,7 +880,7 @@ fn find_nested_value_end(raw: &[u8], nested: usize) -> Option<usize> {
 
 /// Finds the next unescaped quotation mark `"` using SIMD acceleration.
 #[inline(always)]
-fn find_unescaped_quote(slice: &[u8]) -> Option<usize> {
+pub(crate) fn find_unescaped_quote(slice: &[u8]) -> Option<usize> {
     let mut offset = 0;
     while let Some(pos) = memchr(b'"', &slice[offset..]) {
         let abs_pos = offset + pos;

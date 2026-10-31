@@ -1060,3 +1060,73 @@ fn test_subtitle_does_not_swallow_the_next_line() {
     assert_eq!(t.get("state").and_then(|f| f.value()), Some("hover"));
     assert!(Template::parse("##s x\"v\"\n").is_err());
 }
+
+#[cfg(feature = "serde")]
+#[test]
+fn test_from_str_single_pass() {
+    use serde::Deserialize;
+    use std::collections::HashMap;
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct Item<'a> {
+        id: u64,
+        name: &'a str,
+        price: f64,
+        active: bool,
+        color: &'a str,
+        tags: Vec<&'a str>,
+        mode: String,
+        nick: Option<String>,
+    }
+
+    let src = "@theme \"dark\"\n##meta \"x\"\n#Header\n// comment\n\
+               #item_1 {\n    id: 18446744073709551615\n    name: \"first\", price: 9.5\n    active: true\n    color: #1e1e2e\n    tags [a, \"b, c\"]\n    mode | fast, slow |\n    nick: null\n    on_click = buy()\n}\n\
+               @item_2 { id: 2, name: \"\", price: -1e3, active: false, color: rgba(1, 2, 3), tags [], mode | x |, nick: \"n\" }\n";
+    let items: HashMap<&str, Item> = rost::from_str(src).unwrap();
+    assert_eq!(
+        items["item_1"],
+        Item {
+            id: u64::MAX,
+            name: "first",
+            price: 9.5,
+            active: true,
+            color: "#1e1e2e",
+            tags: vec!["a", "b, c"],
+            mode: "fast".into(),
+            nick: None,
+        }
+    );
+    assert_eq!(items["item_2"].color, "rgba(1, 2, 3)");
+    assert_eq!(items["item_2"].nick.as_deref(), Some("n"));
+    assert!(src.as_bytes().as_ptr_range().contains(&items["item_1"].name.as_ptr()));
+
+    // Same result as the bytecode path.
+    let via_template: HashMap<String, serde_json::Value> = rost::from_template(&Template::parse(src).unwrap()).unwrap();
+    let direct: HashMap<String, serde_json::Value> = rost::from_slice(src.as_bytes()).unwrap();
+    assert_eq!(direct, via_template);
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn test_from_str_reports_positions() {
+    use std::collections::HashMap;
+    type Doc = HashMap<String, serde_json::Value>;
+
+    let err = |src: &str| rost::from_str::<Doc>(src).unwrap_err().to_string();
+    assert_eq!(err("a: 1\nname: \"open\n"), "2:7: unterminated string literal");
+    assert_eq!(err("#a {\n x: 1\n"), "3:1: unclosed block: missing `}`");
+    assert_eq!(err("a: 1\n}\n"), "2:1: unexpected `}` without a matching block");
+    assert_eq!(err("a: 1\nwidth 120px\n"), "2:1: expected `:`, `=`, `|`, `[` or `{` after key");
+    assert_eq!(err("list [1, 2\n"), "1:7: unterminated list: missing closing `]`");
+    assert!(rost::from_slice::<Doc>(b"a: \xff\n").unwrap_err().to_string().starts_with("invalid UTF-8"));
+
+    #[derive(Debug, serde::Deserialize)]
+    #[allow(dead_code)]
+    struct Strict {
+        port: u16,
+    }
+    assert_eq!(
+        rost::from_str::<Strict>("port: 70000\n").unwrap_err().to_string(),
+        "cannot parse 'port' as u16: 70000"
+    );
+}
