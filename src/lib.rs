@@ -82,8 +82,6 @@
 //! assert_eq!(dim.unit, "px");
 //! ```
 
-extern crate self as utilrs_rost;
-
 pub mod field;
 pub mod malleable;
 pub mod parser;
