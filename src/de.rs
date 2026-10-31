@@ -232,9 +232,12 @@ impl<'de> SeqAccess<'de> for RawSeqAccess<'de> {
         if self.idx >= self.items.len() {
             return Ok(None);
         }
-        let item = unquote(self.items[self.idx]);
+        let item = self.items[self.idx];
         self.idx += 1;
-        seed.deserialize(BorrowedStrDeserializer::new(item)).map(Some)
+        // Items are typed like property values: `1` is a number, `"1"` a string.
+        let inner = unquote(item);
+        let quote = if inner.len() == item.len() { QuoteStyle::Bare } else { QuoteStyle::Quoted };
+        seed.deserialize(FieldDeserializer { name: "list item", value: inner, quote }).map(Some)
     }
 }
 

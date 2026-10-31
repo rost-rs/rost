@@ -1011,3 +1011,31 @@ fn test_serde_borrows_strings_from_the_template() {
     assert!(matches!(theme.note, Cow::Borrowed("plain")));
     assert_eq!(theme.escaped, "a\tb");
 }
+
+#[cfg(feature = "serde")]
+#[test]
+fn test_serde_list_items_are_typed() {
+    use serde::Deserialize;
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct Data {
+        ids: Vec<u32>,
+        weights: Vec<f64>,
+        flags: Vec<bool>,
+        names: Vec<String>,
+        maybe: Vec<Option<i64>>,
+    }
+
+    let src = "ids [1, 2, 3]\nweights [0.5, 1e3]\nflags [true, false]\nnames [\"a, b\", c]\nmaybe [null, -4]\n";
+    let data: Data = rost::from_template(&Template::parse(src).unwrap()).unwrap();
+    assert_eq!(
+        data,
+        Data {
+            ids: vec![1, 2, 3],
+            weights: vec![0.5, 1000.0],
+            flags: vec![true, false],
+            names: vec!["a, b".into(), "c".into()],
+            maybe: vec![None, Some(-4)],
+        }
+    );
+}
