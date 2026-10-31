@@ -347,21 +347,17 @@ impl Template {
                         if key == clean_path && depth == 0 {
                             return Some(parser::resolve_slice(&self.data, &self.fields, idx + 9));
                         }
-                        idx += 21;
+                        idx += parser::REC_PAIR;
                     }
                     parser::TAG_BLOCK_START => {
                         depth += 1;
-                        idx += 13;
+                        idx += parser::REC_NAMED;
                     }
                     parser::TAG_BLOCK_END => {
                         depth = depth.saturating_sub(1);
-                        idx += 5;
+                        idx += parser::REC_BLOCK_END;
                     }
-                    parser::TAG_SUBTITLE | parser::TAG_DIRECTIVE => idx += 21,
-                    parser::TAG_ENUM | parser::TAG_LIST => idx += 25,
-                    parser::TAG_VAR_FUNC => idx += 17,
-                    parser::TAG_TITLE => idx += 13,
-                    _ => idx += 1,
+                    other => idx += parser::record_len(other),
                 }
             }
             return None;
@@ -392,7 +388,7 @@ impl Template {
                 parser::TAG_BLOCK_START => {
                     let name = parser::resolve_slice(&self.data, &self.fields, idx + 1);
                     let name_clean = name.strip_prefix('#').unwrap_or(name);
-                    idx += 13;
+                    idx += parser::REC_NAMED;
                     if stack_depth < block_path.len() && stack_depth == matched_depth && name_clean == block_path[stack_depth] {
                         matched_depth += 1;
                     }
@@ -403,7 +399,7 @@ impl Template {
                     if stack_depth < matched_depth {
                         matched_depth = stack_depth;
                     }
-                    idx += 5;
+                    idx += parser::REC_BLOCK_END;
                 }
                 parser::TAG_COMMON_TEXT => {
                     if stack_depth == block_path.len() && matched_depth == block_path.len() {
@@ -412,13 +408,9 @@ impl Template {
                             return Some(parser::resolve_slice(&self.data, &self.fields, idx + 9));
                         }
                     }
-                    idx += 21;
+                    idx += parser::REC_PAIR;
                 }
-                parser::TAG_SUBTITLE | parser::TAG_DIRECTIVE => idx += 21,
-                parser::TAG_ENUM | parser::TAG_LIST => idx += 25,
-                parser::TAG_VAR_FUNC => idx += 17,
-                parser::TAG_TITLE => idx += 13,
-                _ => idx += 1,
+                other => idx += parser::record_len(other),
             }
         }
 

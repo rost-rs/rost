@@ -167,7 +167,7 @@ impl Template {
             match tag {
                 crate::parser::TAG_BLOCK_START => {
                     let name = crate::parser::resolve_slice(&self.data, &self.fields, idx + 1);
-                    idx += 13;
+                    idx += crate::parser::REC_NAMED;
                     let clean_name = name.strip_prefix('#').unwrap_or(name);
                     let full_path = if let Some(p) = stack.last() {
                         format!("{}.{}", p, clean_name)
@@ -185,13 +185,9 @@ impl Template {
                 }
                 crate::parser::TAG_BLOCK_END => {
                     stack.pop();
-                    idx += 5;
+                    idx += crate::parser::REC_BLOCK_END;
                 }
-                crate::parser::TAG_COMMON_TEXT | crate::parser::TAG_SUBTITLE | crate::parser::TAG_DIRECTIVE => idx += 21,
-                crate::parser::TAG_ENUM | crate::parser::TAG_LIST => idx += 25,
-                crate::parser::TAG_VAR_FUNC => idx += 17,
-                crate::parser::TAG_TITLE => idx += 13,
-                _ => idx += 1,
+                other => idx += crate::parser::record_len(other),
             }
         }
 
@@ -211,15 +207,15 @@ impl Template {
                             let val = crate::parser::resolve_slice(&self.data, &self.fields, cur + 9);
                             obj.properties.insert(key.to_string(), val.to_string());
                         }
-                        cur += 21;
+                        cur += crate::parser::REC_PAIR;
                     }
                     crate::parser::TAG_BLOCK_START => {
                         depth += 1;
-                        cur += 13;
+                        cur += crate::parser::REC_NAMED;
                     }
                     crate::parser::TAG_BLOCK_END => {
                         depth -= 1;
-                        cur += 5;
+                        cur += crate::parser::REC_BLOCK_END;
                     }
                     crate::parser::TAG_ENUM | crate::parser::TAG_LIST => {
                         if depth == 1 {
@@ -227,12 +223,9 @@ impl Template {
                             let val = crate::parser::resolve_slice(&self.data, &self.fields, cur + 9);
                             obj.properties.insert(key.to_string(), val.to_string());
                         }
-                        cur += 25;
+                        cur += crate::parser::REC_RANGE;
                     }
-                    crate::parser::TAG_SUBTITLE | crate::parser::TAG_DIRECTIVE => cur += 21,
-                    crate::parser::TAG_VAR_FUNC => cur += 17,
-                    crate::parser::TAG_TITLE => cur += 13,
-                    _ => cur += 1,
+                    other => cur += crate::parser::record_len(other),
                 }
             }
 

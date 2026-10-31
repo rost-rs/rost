@@ -25,6 +25,34 @@ pub const TAG_BLOCK_START: u8 = 0x08;
 /// Tag identifier for block closures `}`.
 pub const TAG_BLOCK_END: u8 = 0x09;
 
+/// Byte length of a [`TAG_TITLE`] / [`TAG_BLOCK_START`] record: tag + name (offset, len) + line.
+pub const REC_NAMED: usize = 13;
+/// Byte length of a [`TAG_COMMON_TEXT`] / [`TAG_SUBTITLE`] / [`TAG_DIRECTIVE`] record:
+/// tag + name (offset, len) + value (offset, len) + line.
+pub const REC_PAIR: usize = 21;
+/// Byte length of a [`TAG_ENUM`] / [`TAG_LIST`] record:
+/// tag + name (offset, len) + body (offset, len) + start line + end line.
+pub const REC_RANGE: usize = 25;
+/// Byte length of a [`TAG_VAR_FUNC`] record: tag + name (offset, len) + expression (offset, len).
+pub const REC_BINDING: usize = 17;
+/// Byte length of a [`TAG_BLOCK_END`] record: tag + line.
+pub const REC_BLOCK_END: usize = 5;
+
+/// Returns the total byte length of the bytecode record starting with `tag`.
+///
+/// Unknown tags report a length of `1` so scanners always make progress.
+#[inline(always)]
+pub const fn record_len(tag: u8) -> usize {
+    match tag {
+        TAG_TITLE | TAG_BLOCK_START => REC_NAMED,
+        TAG_COMMON_TEXT | TAG_SUBTITLE | TAG_DIRECTIVE => REC_PAIR,
+        TAG_ENUM | TAG_LIST => REC_RANGE,
+        TAG_VAR_FUNC => REC_BINDING,
+        TAG_BLOCK_END => REC_BLOCK_END,
+        _ => 1,
+    }
+}
+
 // Fast 256-element lookup table for delimiter detection in 1 CPU cycle
 const IS_DELIM_OR_WS: [bool; 256] = {
     let mut table = [false; 256];
@@ -349,7 +377,7 @@ pub fn parse_into_bytecode(raw: &[u8]) -> Vec<u8> {
 
 #[inline(always)]
 fn emit_title(buf: &mut Vec<u8>, name_off: u32, name_len: u32, line: u32) {
-    if buf.capacity() - buf.len() < 13 {
+    if buf.capacity() - buf.len() < REC_NAMED {
         buf.reserve(4096);
     }
     let len = buf.len();
@@ -359,13 +387,13 @@ fn emit_title(buf: &mut Vec<u8>, name_off: u32, name_len: u32, line: u32) {
         std::ptr::copy_nonoverlapping(name_off.to_le_bytes().as_ptr(), ptr.add(1), 4);
         std::ptr::copy_nonoverlapping(name_len.to_le_bytes().as_ptr(), ptr.add(5), 4);
         std::ptr::copy_nonoverlapping(line.to_le_bytes().as_ptr(), ptr.add(9), 4);
-        buf.set_len(len + 13);
+        buf.set_len(len + REC_NAMED);
     }
 }
 
 #[inline(always)]
 fn emit_subtitle(buf: &mut Vec<u8>, name_off: u32, name_len: u32, val_off: u32, val_len: u32, line: u32) {
-    if buf.capacity() - buf.len() < 21 {
+    if buf.capacity() - buf.len() < REC_PAIR {
         buf.reserve(4096);
     }
     let len = buf.len();
@@ -377,13 +405,13 @@ fn emit_subtitle(buf: &mut Vec<u8>, name_off: u32, name_len: u32, val_off: u32, 
         std::ptr::copy_nonoverlapping(val_off.to_le_bytes().as_ptr(), ptr.add(9), 4);
         std::ptr::copy_nonoverlapping(val_len.to_le_bytes().as_ptr(), ptr.add(13), 4);
         std::ptr::copy_nonoverlapping(line.to_le_bytes().as_ptr(), ptr.add(17), 4);
-        buf.set_len(len + 21);
+        buf.set_len(len + REC_PAIR);
     }
 }
 
 #[inline(always)]
 fn emit_property(buf: &mut Vec<u8>, key_off: u32, key_len: u32, val_off: u32, val_len: u32, line: u32) {
-    if buf.capacity() - buf.len() < 21 {
+    if buf.capacity() - buf.len() < REC_PAIR {
         buf.reserve(4096);
     }
     let len = buf.len();
@@ -395,13 +423,13 @@ fn emit_property(buf: &mut Vec<u8>, key_off: u32, key_len: u32, val_off: u32, va
         std::ptr::copy_nonoverlapping(val_off.to_le_bytes().as_ptr(), ptr.add(9), 4);
         std::ptr::copy_nonoverlapping(val_len.to_le_bytes().as_ptr(), ptr.add(13), 4);
         std::ptr::copy_nonoverlapping(line.to_le_bytes().as_ptr(), ptr.add(17), 4);
-        buf.set_len(len + 21);
+        buf.set_len(len + REC_PAIR);
     }
 }
 
 #[inline(always)]
 fn emit_directive(buf: &mut Vec<u8>, name_off: u32, name_len: u32, val_off: u32, val_len: u32, line: u32) {
-    if buf.capacity() - buf.len() < 21 {
+    if buf.capacity() - buf.len() < REC_PAIR {
         buf.reserve(4096);
     }
     let len = buf.len();
@@ -413,13 +441,13 @@ fn emit_directive(buf: &mut Vec<u8>, name_off: u32, name_len: u32, val_off: u32,
         std::ptr::copy_nonoverlapping(val_off.to_le_bytes().as_ptr(), ptr.add(9), 4);
         std::ptr::copy_nonoverlapping(val_len.to_le_bytes().as_ptr(), ptr.add(13), 4);
         std::ptr::copy_nonoverlapping(line.to_le_bytes().as_ptr(), ptr.add(17), 4);
-        buf.set_len(len + 21);
+        buf.set_len(len + REC_PAIR);
     }
 }
 
 #[inline(always)]
 fn emit_block_start(buf: &mut Vec<u8>, name_off: u32, name_len: u32, line: u32) {
-    if buf.capacity() - buf.len() < 13 {
+    if buf.capacity() - buf.len() < REC_NAMED {
         buf.reserve(4096);
     }
     let len = buf.len();
@@ -429,13 +457,13 @@ fn emit_block_start(buf: &mut Vec<u8>, name_off: u32, name_len: u32, line: u32) 
         std::ptr::copy_nonoverlapping(name_off.to_le_bytes().as_ptr(), ptr.add(1), 4);
         std::ptr::copy_nonoverlapping(name_len.to_le_bytes().as_ptr(), ptr.add(5), 4);
         std::ptr::copy_nonoverlapping(line.to_le_bytes().as_ptr(), ptr.add(9), 4);
-        buf.set_len(len + 13);
+        buf.set_len(len + REC_NAMED);
     }
 }
 
 #[inline(always)]
 fn emit_block_end(buf: &mut Vec<u8>, line: u32) {
-    if buf.capacity() - buf.len() < 5 {
+    if buf.capacity() - buf.len() < REC_BLOCK_END {
         buf.reserve(4096);
     }
     let len = buf.len();
@@ -443,13 +471,13 @@ fn emit_block_end(buf: &mut Vec<u8>, line: u32) {
         let ptr = buf.as_mut_ptr().add(len);
         *ptr = TAG_BLOCK_END;
         std::ptr::copy_nonoverlapping(line.to_le_bytes().as_ptr(), ptr.add(1), 4);
-        buf.set_len(len + 5);
+        buf.set_len(len + REC_BLOCK_END);
     }
 }
 
 #[inline(always)]
 fn emit_enum(buf: &mut Vec<u8>, k_off: u32, k_len: u32, b_off: u32, b_len: u32, s_line: u32, e_line: u32) {
-    if buf.capacity() - buf.len() < 25 {
+    if buf.capacity() - buf.len() < REC_RANGE {
         buf.reserve(4096);
     }
     let len = buf.len();
@@ -462,13 +490,13 @@ fn emit_enum(buf: &mut Vec<u8>, k_off: u32, k_len: u32, b_off: u32, b_len: u32, 
         std::ptr::copy_nonoverlapping(b_len.to_le_bytes().as_ptr(), ptr.add(13), 4);
         std::ptr::copy_nonoverlapping(s_line.to_le_bytes().as_ptr(), ptr.add(17), 4);
         std::ptr::copy_nonoverlapping(e_line.to_le_bytes().as_ptr(), ptr.add(21), 4);
-        buf.set_len(len + 25);
+        buf.set_len(len + REC_RANGE);
     }
 }
 
 #[inline(always)]
 fn emit_list(buf: &mut Vec<u8>, k_off: u32, k_len: u32, b_off: u32, b_len: u32, s_line: u32, e_line: u32) {
-    if buf.capacity() - buf.len() < 25 {
+    if buf.capacity() - buf.len() < REC_RANGE {
         buf.reserve(4096);
     }
     let len = buf.len();
@@ -481,13 +509,13 @@ fn emit_list(buf: &mut Vec<u8>, k_off: u32, k_len: u32, b_off: u32, b_len: u32, 
         std::ptr::copy_nonoverlapping(b_len.to_le_bytes().as_ptr(), ptr.add(13), 4);
         std::ptr::copy_nonoverlapping(s_line.to_le_bytes().as_ptr(), ptr.add(17), 4);
         std::ptr::copy_nonoverlapping(e_line.to_le_bytes().as_ptr(), ptr.add(21), 4);
-        buf.set_len(len + 25);
+        buf.set_len(len + REC_RANGE);
     }
 }
 
 #[inline(always)]
 fn emit_var_func(buf: &mut Vec<u8>, k_off: u32, k_len: u32, expr_off: u32, expr_len: u32) {
-    if buf.capacity() - buf.len() < 17 {
+    if buf.capacity() - buf.len() < REC_BINDING {
         buf.reserve(4096);
     }
     let len = buf.len();
@@ -498,7 +526,7 @@ fn emit_var_func(buf: &mut Vec<u8>, k_off: u32, k_len: u32, expr_off: u32, expr_
         std::ptr::copy_nonoverlapping(k_len.to_le_bytes().as_ptr(), ptr.add(5), 4);
         std::ptr::copy_nonoverlapping(expr_off.to_le_bytes().as_ptr(), ptr.add(9), 4);
         std::ptr::copy_nonoverlapping(expr_len.to_le_bytes().as_ptr(), ptr.add(13), 4);
-        buf.set_len(len + 17);
+        buf.set_len(len + REC_BINDING);
     }
 }
 

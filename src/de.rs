@@ -222,17 +222,13 @@ impl<'a> BytecodeStream<'a> {
             match tag {
                 TAG_BLOCK_START => {
                     depth += 1;
-                    self.idx += 13;
+                    self.idx += REC_NAMED;
                 }
                 TAG_BLOCK_END => {
                     depth -= 1;
-                    self.idx += 5;
+                    self.idx += REC_BLOCK_END;
                 }
-                TAG_COMMON_TEXT | TAG_SUBTITLE | TAG_DIRECTIVE => self.idx += 21,
-                TAG_ENUM | TAG_LIST => self.idx += 25,
-                TAG_VAR_FUNC => self.idx += 17,
-                TAG_TITLE => self.idx += 13,
-                _ => self.idx += 1,
+                other => self.idx += record_len(other),
             }
         }
     }
@@ -277,20 +273,20 @@ impl<'de, 'a, 's> MapAccess<'de> for RootMapStreamAccess<'a, 's> {
             let tag = self.stream.bytes[self.stream.idx];
             if tag == TAG_BLOCK_START {
                 let name = resolve_slice(self.stream.data, self.stream.bytes, self.stream.idx + 1);
-                self.stream.idx += 13;
+                self.stream.idx += REC_NAMED;
                 let clean = strip_hash(name);
                 self.current_block = Some(clean);
                 return seed.deserialize(clean.into_deserializer()).map(Some);
             } else if tag == TAG_BLOCK_END {
-                self.stream.idx += 5;
+                self.stream.idx += REC_BLOCK_END;
             } else if tag == TAG_COMMON_TEXT || tag == TAG_SUBTITLE || tag == TAG_DIRECTIVE {
-                self.stream.idx += 21;
+                self.stream.idx += REC_PAIR;
             } else if tag == TAG_ENUM || tag == TAG_LIST {
-                self.stream.idx += 25;
+                self.stream.idx += REC_RANGE;
             } else if tag == TAG_VAR_FUNC {
-                self.stream.idx += 17;
+                self.stream.idx += REC_BINDING;
             } else if tag == TAG_TITLE {
-                self.stream.idx += 13;
+                self.stream.idx += REC_NAMED;
             } else {
                 self.stream.idx += 1;
             }
@@ -354,13 +350,13 @@ impl<'de, 'a, 's> MapAccess<'de> for BlockMapStreamAccess<'a, 's> {
                 TAG_COMMON_TEXT => {
                     let key = resolve_slice(self.stream.data, self.stream.bytes, self.stream.idx + 1);
                     let val = resolve_slice(self.stream.data, self.stream.bytes, self.stream.idx + 9);
-                    self.stream.idx += 21;
+                    self.stream.idx += REC_PAIR;
                     self.current_entry = Some(StreamEntry::Field { name: key, val });
                     return seed.deserialize(key.into_deserializer()).map(Some);
                 }
                 TAG_BLOCK_START => {
                     let name = resolve_slice(self.stream.data, self.stream.bytes, self.stream.idx + 1);
-                    self.stream.idx += 13;
+                    self.stream.idx += REC_NAMED;
                     let clean = strip_hash(name);
                     self.current_entry = Some(StreamEntry::SubBlock);
                     return seed.deserialize(clean.into_deserializer()).map(Some);
@@ -368,29 +364,29 @@ impl<'de, 'a, 's> MapAccess<'de> for BlockMapStreamAccess<'a, 's> {
                 TAG_LIST => {
                     let key = resolve_slice(self.stream.data, self.stream.bytes, self.stream.idx + 1);
                     let raw = resolve_slice(self.stream.data, self.stream.bytes, self.stream.idx + 9);
-                    self.stream.idx += 25;
+                    self.stream.idx += REC_RANGE;
                     self.current_entry = Some(StreamEntry::List { raw });
                     return seed.deserialize(key.into_deserializer()).map(Some);
                 }
                 TAG_ENUM => {
                     let key = resolve_slice(self.stream.data, self.stream.bytes, self.stream.idx + 1);
                     let raw = resolve_slice(self.stream.data, self.stream.bytes, self.stream.idx + 9);
-                    self.stream.idx += 25;
+                    self.stream.idx += REC_RANGE;
                     self.current_entry = Some(StreamEntry::Enum { raw });
                     return seed.deserialize(key.into_deserializer()).map(Some);
                 }
                 TAG_BLOCK_END => {
-                    self.stream.idx += 5;
+                    self.stream.idx += REC_BLOCK_END;
                     return Ok(None);
                 }
                 TAG_SUBTITLE | TAG_DIRECTIVE => {
-                    self.stream.idx += 21;
+                    self.stream.idx += REC_PAIR;
                 }
                 TAG_VAR_FUNC => {
-                    self.stream.idx += 17;
+                    self.stream.idx += REC_BINDING;
                 }
                 TAG_TITLE => {
-                    self.stream.idx += 13;
+                    self.stream.idx += REC_NAMED;
                 }
                 _ => {
                     self.stream.idx += 1;
@@ -483,21 +479,21 @@ impl Template {
             let tag = self.fields[idx];
             if tag == TAG_BLOCK_START {
                 let name = resolve_slice(&self.data, &self.fields, idx + 1);
-                idx += 13;
+                idx += REC_NAMED;
                 if strip_hash(name) == clean {
                     found = true;
                     break;
                 }
             } else if tag == TAG_BLOCK_END {
-                idx += 5;
+                idx += REC_BLOCK_END;
             } else if tag == TAG_COMMON_TEXT || tag == TAG_SUBTITLE || tag == TAG_DIRECTIVE {
-                idx += 21;
+                idx += REC_PAIR;
             } else if tag == TAG_ENUM || tag == TAG_LIST {
-                idx += 25;
+                idx += REC_RANGE;
             } else if tag == TAG_VAR_FUNC {
-                idx += 17;
+                idx += REC_BINDING;
             } else if tag == TAG_TITLE {
-                idx += 13;
+                idx += REC_NAMED;
             } else {
                 idx += 1;
             }
