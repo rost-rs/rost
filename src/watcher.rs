@@ -17,7 +17,7 @@ use super::parser;
 use super::Template;
 
 /// Callback closure invoked when an underlying `.rost` file is updated on disk.
-pub type ReloadCallback = Box<dyn Fn(Template) + Send + Sync + 'static>;
+pub type ReloadCallback = Arc<dyn Fn(Template) + Send + Sync + 'static>;
 
 struct FileWatchState {
     last_modified: SystemTime,
@@ -55,48 +55,68 @@ impl CentralWatcher {
                 while running.load(Ordering::Relaxed) {
                     // Sleep on kernel futex yields 0.00% CPU
                     thread::sleep(Duration::from_millis(100));
-
-                    let watcher = CentralWatcher::global();
-
-                    // Batched scan of registered files
-                    if let Ok(mut files) = watcher.files.lock() {
-                        for (path, state) in files.iter_mut() {
-                            if let Ok(metadata) = fs::metadata(path) {
-                                if let Ok(modified) = metadata.modified() {
-                                    if modified > state.last_modified {
-                                        state.last_modified = modified;
-
-                                        // Allow brief grace period for atomic editor file saves
-                                        thread::sleep(Duration::from_millis(15));
-
-                                        if let Ok(data) = super::read_utf8(path) {
-                                            let fields = parser::parse_into_bytecode(&data);
-                                            let new_template = Template {
-                                                path: path.clone(),
-                                                data,
-                                                fields,
-                                                watcher: None,
-                                            };
-                                            state.latest_reloaded = Some(new_template.clone());
-
-                                            // Trigger callbacks
-                                            for cb in state.callbacks.iter() {
-                                                cb(new_template.clone());
-                                            }
-
-                                            // Broadcast to channels
-                                            state
-                                                .subscribers
-                                                .retain(|tx| tx.send(new_template.clone()).is_ok());
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    CentralWatcher::global().poll_once();
                 }
             })
             .ok();
+    }
+
+    /// Scans every registered file once and dispatches reloads.
+    ///
+    /// The global lock is never held while sleeping, reading files, or running user
+    /// callbacks, so callbacks may freely call back into the watcher.
+    fn poll_once(&self) {
+        let snapshot: Vec<(PathBuf, SystemTime)> = match self.files.lock() {
+            Ok(files) => files.iter().map(|(p, s)| (p.clone(), s.last_modified)).collect(),
+            Err(_) => return,
+        };
+
+        for (path, last_modified) in snapshot {
+            let Ok(modified) = fs::metadata(&path).and_then(|m| m.modified()) else {
+                continue;
+            };
+            if modified <= last_modified {
+                continue;
+            }
+
+            // Allow brief grace period for atomic editor file saves
+            thread::sleep(Duration::from_millis(15));
+
+            let reloaded = super::read_utf8(&path).ok().map(|data| {
+                let fields = parser::parse_into_bytecode(&data);
+                Template {
+                    path: path.clone(),
+                    data,
+                    fields,
+                    watcher: None,
+                }
+            });
+
+            let callbacks = {
+                let Ok(mut files) = self.files.lock() else {
+                    return;
+                };
+                let Some(state) = files.get_mut(&path) else {
+                    continue;
+                };
+                state.last_modified = modified;
+                let Some(new_template) = &reloaded else {
+                    continue;
+                };
+                state.latest_reloaded = Some(new_template.clone());
+                // Channel sends never block or run user code, so they stay under the lock.
+                state
+                    .subscribers
+                    .retain(|tx| tx.send(new_template.clone()).is_ok());
+                state.callbacks.clone()
+            };
+
+            if let Some(new_template) = reloaded {
+                for cb in &callbacks {
+                    cb(new_template.clone());
+                }
+            }
+        }
     }
 
     /// Registers a file for monitoring and returns a [`HotReloadWatcher`] handle.
@@ -172,7 +192,7 @@ impl HotReloadWatcher {
     {
         if let Ok(mut files) = CentralWatcher::global().files.lock() {
             if let Some(state) = files.get_mut(&self.path) {
-                state.callbacks.push(Box::new(cb));
+                state.callbacks.push(Arc::new(cb));
             }
         }
     }

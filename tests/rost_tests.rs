@@ -639,3 +639,37 @@ fn test_patch_value_honours_scope() {
     assert!(!t.patch_value("audio.missing", "1"));
     assert!(!t.patch_value("music.volume", "1"));
 }
+
+/// Bumps a file's mtime into the future so the watcher reliably sees a change.
+fn touch_future(path: &std::path::Path, contents: &str) {
+    std::fs::write(path, contents).unwrap();
+    let file = std::fs::File::options().write(true).open(path).unwrap();
+    file.set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(2))
+        .unwrap();
+}
+
+#[test]
+fn test_reload_callback_can_reenter_watcher() {
+    use std::sync::mpsc::channel;
+    use std::time::Duration;
+
+    let path = std::env::temp_dir().join(format!("rost_reentrant_cb_{}.rost", std::process::id()));
+    std::fs::write(&path, "v: 1\n").unwrap();
+    let template = Template::load_with_options(&path, true).expect("load watched");
+
+    let (tx, rx) = channel();
+    let cb_path = path.clone();
+    template.on_reload(move |t| {
+        // Both calls take the global watcher lock; this deadlocked when callbacks ran under it.
+        let count = rost::CentralWatcher::global().active_files_count();
+        let extra = rost::HotReloadWatcher::new(&cb_path).expect("re-register");
+        let _ = extra.subscribe();
+        let _ = tx.send((t.query_i64("v"), count));
+    });
+
+    touch_future(&path, "v: 2\n");
+    let (v, count) = rx.recv_timeout(Duration::from_secs(3)).expect("callback ran without deadlock");
+    assert_eq!(v, Some(2));
+    assert!(count >= 1);
+    let _ = std::fs::remove_file(&path);
+}
