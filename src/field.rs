@@ -366,10 +366,10 @@ impl<'a> Scalar<'a> {
         {
             return Scalar::Color(c);
         }
-        let starts_numeric = match bytes {
-            [b'-' | b'+', b'0'..=b'9' | b'.', ..] | [b'0'..=b'9', ..] | [b'.', b'0'..=b'9', ..] => true,
-            _ => false,
-        };
+        let starts_numeric = matches!(
+            bytes,
+            [b'-' | b'+', b'0'..=b'9' | b'.', ..] | [b'0'..=b'9', ..] | [b'.', b'0'..=b'9', ..]
+        );
         if starts_numeric {
             if let Ok(i) = s.parse::<i64>() {
                 return Scalar::Int(i);
