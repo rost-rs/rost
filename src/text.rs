@@ -76,6 +76,23 @@ const TRIVIA: [bool; 256] = {
     table
 };
 
+/// Finds the closing quote of a string body and reports whether it contains escapes.
+///
+/// Typical values are short, so a byte loop handles strings without escapes; the first
+/// backslash hands over to the escape-aware SIMD search.
+#[inline(always)]
+fn find_string_end(body: &[u8]) -> Option<(usize, bool)> {
+    for (i, &b) in body.iter().enumerate().take(32) {
+        match b {
+            b'"' => return Some((i, false)),
+            b'\\' => return find_unescaped_quote(body).map(|end| (end, true)),
+            _ => {}
+        }
+    }
+    let end = find_unescaped_quote(body)?;
+    Some((end, memchr(b'\\', &body[..end]).is_some()))
+}
+
 struct Parser<'de> {
     src: &'de str,
     bytes: &'de [u8],
@@ -160,8 +177,15 @@ impl<'de> Parser<'de> {
     #[inline]
     fn read_scalar(&mut self) -> Result<(&'de str, QuoteStyle), DeError> {
         self.skip_inline_ws();
-        let rest = &self.bytes[self.pos..];
-        if rest.starts_with(RAW_QUOTE) {
+        if self.peek() != Some(b'"') {
+            let start = self.pos;
+            let end = find_value_end(self.bytes, start).unwrap_or(self.bytes.len());
+            let len = trim_trailing_ws(self.bytes, start, end);
+            // A ',' belongs to this value; '\n' and '}' are left for the enclosing map.
+            self.pos = if self.bytes.get(end) == Some(&b',') { end + 1 } else { end };
+            return Ok((&self.src[start..start + len], QuoteStyle::Bare));
+        }
+        if self.bytes[self.pos..].starts_with(RAW_QUOTE) {
             let start = self.pos + RAW_QUOTE.len();
             let Some(len) = memchr::memmem::find(&self.bytes[start..], RAW_QUOTE) else {
                 return Err(self.error("unterminated raw string: missing closing `\"\"\"`"));
@@ -169,20 +193,89 @@ impl<'de> Parser<'de> {
             self.pos = start + len + RAW_QUOTE.len();
             return Ok((&self.src[start..start + len], QuoteStyle::Raw));
         }
-        if rest.first() == Some(&b'"') {
-            let start = self.pos + 1;
-            let Some(len) = find_unescaped_quote(&self.bytes[start..]) else {
-                return Err(self.error("unterminated string literal"));
-            };
-            self.pos = start + len + 1;
-            return Ok((&self.src[start..start + len], QuoteStyle::Quoted));
+        let start = self.pos + 1;
+        let Some((len, escaped)) = find_string_end(&self.bytes[start..]) else {
+            return Err(self.error("unterminated string literal"));
+        };
+        self.pos = start + len + 1;
+        // Without escapes the body is used verbatim, which is exactly what `Raw` means.
+        let quote = if escaped { QuoteStyle::Quoted } else { QuoteStyle::Raw };
+        Ok((&self.src[start..start + len], quote))
+    }
+
+    /// Completes a bare token ending at `end` if nothing but trailing whitespace or `;`
+    /// separates it from the end of the value, consuming a following `,` like
+    /// [`Parser::read_scalar`]. Returns `false` (consuming nothing) otherwise.
+    #[inline(always)]
+    fn finish_bare(&mut self, mut end: usize) -> bool {
+        while matches!(self.bytes.get(end), Some(b' ' | b'\t' | b'\r' | b';')) {
+            end += 1;
         }
-        let start = self.pos;
-        let end = find_value_end(self.bytes, start).unwrap_or(self.bytes.len());
-        let len = trim_trailing_ws(self.bytes, start, end);
-        // A ',' belongs to this value; '\n' and '}' are left for the enclosing map.
-        self.pos = if self.bytes.get(end) == Some(&b',') { end + 1 } else { end };
-        Ok((&self.src[start..start + len], QuoteStyle::Bare))
+        match self.bytes.get(end) {
+            None | Some(b'\n' | b'}') => self.pos = end,
+            Some(b',') => self.pos = end + 1,
+            _ => return false,
+        }
+        true
+    }
+
+    /// Parses a plain integer value in place. Returns the value and the end of its digits.
+    #[inline(always)]
+    fn plain_int(&mut self) -> Option<(i64, usize)> {
+        let bytes = self.bytes;
+        let mut i = self.pos;
+        let negative = bytes.get(i) == Some(&b'-');
+        i += usize::from(negative);
+        let digits = i;
+        let mut value: i64 = 0;
+        while let Some(&b) = bytes.get(i) {
+            let d = b.wrapping_sub(b'0');
+            if d > 9 || i - digits == 18 {
+                break;
+            }
+            value = value * 10 + i64::from(d);
+            i += 1;
+        }
+        if i == digits || bytes.get(i).is_some_and(u8::is_ascii_digit) || !self.finish_bare(i) {
+            return None;
+        }
+        Some((if negative { -value } else { value }, i))
+    }
+
+    /// Parses a plain decimal value in place (see `parse_fast_f64` for the exactness
+    /// argument of the fast path).
+    #[inline(always)]
+    fn plain_decimal(&mut self) -> Option<f64> {
+        const POW10: [f64; 16] = [1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11, 1e12, 1e13, 1e14, 1e15];
+        let bytes = self.bytes;
+        let mut i = self.pos;
+        let negative = bytes.get(i) == Some(&b'-');
+        i += usize::from(negative);
+        let mut mantissa: u64 = 0;
+        let mut count = 0usize;
+        let mut fraction: Option<usize> = None;
+        while let Some(&b) = bytes.get(i) {
+            match b {
+                b'0'..=b'9' if count < 15 => {
+                    mantissa = mantissa * 10 + u64::from(b - b'0');
+                    count += 1;
+                }
+                b'.' if fraction.is_none() => fraction = Some(count),
+                _ => break,
+            }
+            i += 1;
+        }
+        if count == 0 || bytes.get(i).is_some_and(|b| b.is_ascii_digit() || *b == b'.') || !self.finish_bare(i) {
+            return None;
+        }
+        let value = mantissa as f64 / POW10[count - fraction.unwrap_or(count)];
+        Some(if negative { -value } else { value })
+    }
+
+    /// Consumes `word` (`true`, `false`, `null`) if it is the whole bare value.
+    #[inline(always)]
+    fn plain_word(&mut self, word: &[u8]) -> bool {
+        self.bytes[self.pos..].starts_with(word) && self.finish_bare(self.pos + word.len())
     }
 
     /// Reads a list body after `[`, up to its matching `]`.
@@ -345,10 +438,7 @@ impl<'de> MapAccess<'de> for Entries<'_, 'de> {
     #[inline]
     fn next_value_seed<V: DeserializeSeed<'de>>(&mut self, seed: V) -> Result<V::Value, DeError> {
         match self.pending.take() {
-            Some(Pending::Scalar) => {
-                let (value, quote) = self.p.read_scalar()?;
-                seed.deserialize(FieldDeserializer { name: self.key, value, quote })
-            }
+            Some(Pending::Scalar) => seed.deserialize(Scalar { p: &mut *self.p, key: self.key }),
             Some(Pending::Block) => seed.deserialize(Block { p: &mut *self.p, root: false }),
             Some(Pending::List) => {
                 let raw = self.p.read_list()?;
@@ -423,5 +513,116 @@ impl<'de> Deserializer<'de> for Block<'_, 'de> {
         bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
         bytes byte_buf unit unit_struct newtype_struct seq tuple
         tuple_struct map struct enum identifier
+    }
+}
+
+/// The value after `key:`, read lazily so the type hint picks the parser.
+///
+/// Integers, plain decimals, booleans and `null` are converted while scanning; anything
+/// else (units, hex colors, escapes, …) is read as text and handed to the same
+/// [`FieldDeserializer`] that `from_template` uses, so results never differ.
+struct Scalar<'a, 'de> {
+    p: &'a mut Parser<'de>,
+    key: &'de str,
+}
+
+impl<'de> Scalar<'_, 'de> {
+    fn text(self) -> Result<FieldDeserializer<'de>, DeError> {
+        let (value, quote) = self.p.read_scalar()?;
+        Ok(FieldDeserializer { name: self.key, value, quote })
+    }
+}
+
+macro_rules! fused_integers {
+    ($($method:ident => $visit:ident: $ty:ty),* $(,)?) => {$(
+        #[inline]
+        fn $method<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, DeError> {
+            self.p.skip_inline_ws();
+            let start = self.p.pos;
+            match self.p.plain_int() {
+                Some((value, end)) => match <$ty>::try_from(value) {
+                    Ok(v) => visitor.$visit(v),
+                    // Out of range: let the shared path produce the usual error.
+                    Err(_) => FieldDeserializer { name: self.key, value: &self.p.src[start..end], quote: QuoteStyle::Bare }
+                        .$method(visitor),
+                },
+                None => self.text()?.$method(visitor),
+            }
+        }
+    )*};
+}
+
+impl<'de> Deserializer<'de> for Scalar<'_, 'de> {
+    type Error = DeError;
+
+    #[inline]
+    fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, DeError> {
+        self.text()?.deserialize_any(visitor)
+    }
+
+    fused_integers! {
+        deserialize_i8 => visit_i8: i8,
+        deserialize_i16 => visit_i16: i16,
+        deserialize_i32 => visit_i32: i32,
+        deserialize_i64 => visit_i64: i64,
+        deserialize_u8 => visit_u8: u8,
+        deserialize_u16 => visit_u16: u16,
+        deserialize_u32 => visit_u32: u32,
+        deserialize_u64 => visit_u64: u64,
+    }
+
+    #[inline]
+    fn deserialize_f64<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, DeError> {
+        self.p.skip_inline_ws();
+        match self.p.plain_decimal() {
+            Some(v) => visitor.visit_f64(v),
+            None => self.text()?.deserialize_f64(visitor),
+        }
+    }
+
+    #[inline]
+    fn deserialize_f32<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, DeError> {
+        self.text()?.deserialize_f32(visitor)
+    }
+
+    #[inline]
+    fn deserialize_bool<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, DeError> {
+        self.p.skip_inline_ws();
+        if self.p.plain_word(b"true") {
+            return visitor.visit_bool(true);
+        }
+        if self.p.plain_word(b"false") {
+            return visitor.visit_bool(false);
+        }
+        self.text()?.deserialize_bool(visitor)
+    }
+
+    #[inline]
+    fn deserialize_str<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, DeError> {
+        self.text()?.deserialize_str(visitor)
+    }
+
+    #[inline]
+    fn deserialize_string<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, DeError> {
+        self.text()?.deserialize_string(visitor)
+    }
+
+    #[inline]
+    fn deserialize_option<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, DeError> {
+        self.p.skip_inline_ws();
+        if self.p.plain_word(b"null") {
+            return visitor.visit_none();
+        }
+        if self.p.peek() == Some(b'"') {
+            // Quoted values are never `null`; keep the lazy fast paths for the inner value.
+            return visitor.visit_some(self);
+        }
+        // Bare values decide `null` with the shared trimming rules.
+        self.text()?.deserialize_option(visitor)
+    }
+
+    serde::forward_to_deserialize_any! {
+        i128 u128 char bytes byte_buf unit unit_struct newtype_struct seq tuple
+        tuple_struct map struct enum identifier ignored_any
     }
 }
