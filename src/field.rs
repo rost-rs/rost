@@ -310,6 +310,97 @@ fn decode_escape(esc: &str) -> (Option<char>, usize) {
     (None, 0)
 }
 
+/// A property value classified into its type.
+///
+/// Bare tokens are typed by their shape; quoted and raw strings are always [`Scalar::Str`],
+/// so `"42"` stays a string while `42` is an integer.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Scalar<'a> {
+    /// `null`
+    Null,
+    /// `true` / `false`
+    Bool(bool),
+    /// Integer literal that fits `i64` (`42`, `-7`).
+    Int(i64),
+    /// Floating point literal (`3.14`, `-0.5`, `1e-3`).
+    Float(f64),
+    /// Hex color (`#fff`, `#1e1e2e`), packed as returned by [`parse_fast_u32`].
+    Color(u32),
+    /// Number with a unit (`120px`, `1.5rem`, `75%`).
+    Dimension(Dimension<'a>),
+    /// Any other bare token (`easy`, `rgba(1, 2, 3)`) or a quoted / raw string.
+    Str(std::borrow::Cow<'a, str>),
+}
+
+impl<'a> Scalar<'a> {
+    /// Classifies a value slice according to how it was quoted.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rost::field::{Scalar, QuoteStyle};
+    ///
+    /// assert_eq!(Scalar::classify("42", QuoteStyle::Bare), Scalar::Int(42));
+    /// assert_eq!(Scalar::classify("42", QuoteStyle::Quoted), Scalar::Str("42".into()));
+    /// assert_eq!(Scalar::classify("#ff0000", QuoteStyle::Bare), Scalar::Color(0xff0000));
+    /// assert!(matches!(Scalar::classify("12px", QuoteStyle::Bare), Scalar::Dimension(_)));
+    /// ```
+    pub fn classify(value: &'a str, quote: QuoteStyle) -> Self {
+        match quote {
+            QuoteStyle::Quoted => return Scalar::Str(unescape(value)),
+            QuoteStyle::Raw => return Scalar::Str(std::borrow::Cow::Borrowed(value)),
+            QuoteStyle::Bare => {}
+        }
+        let s = value.trim().trim_end_matches(';').trim_end();
+        match s {
+            "null" => return Scalar::Null,
+            "true" => return Scalar::Bool(true),
+            "false" => return Scalar::Bool(false),
+            _ => {}
+        }
+        let bytes = s.as_bytes();
+        if let Some(hex) = s.strip_prefix('#')
+            && matches!(hex.len(), 3 | 4 | 6 | 8)
+            && hex.bytes().all(|b| b.is_ascii_hexdigit())
+            && let Some(c) = parse_fast_u32(s)
+        {
+            return Scalar::Color(c);
+        }
+        let starts_numeric = match bytes {
+            [b'-' | b'+', b'0'..=b'9' | b'.', ..] | [b'0'..=b'9', ..] | [b'.', b'0'..=b'9', ..] => true,
+            _ => false,
+        };
+        if starts_numeric {
+            if let Ok(i) = s.parse::<i64>() {
+                return Scalar::Int(i);
+            }
+            if let Ok(f) = s.parse::<f64>() {
+                return Scalar::Float(f);
+            }
+            if let Some(dim) = Dimension::parse(s)
+                && !dim.unit.is_empty()
+                && dim.unit.bytes().all(|b| b.is_ascii_alphabetic() || b == b'%')
+            {
+                return Scalar::Dimension(dim);
+            }
+        }
+        Scalar::Str(std::borrow::Cow::Borrowed(s))
+    }
+
+    /// Returns a short name of the value's type (`"int"`, `"color"`, …), for messages.
+    pub fn type_name(&self) -> &'static str {
+        match self {
+            Scalar::Null => "null",
+            Scalar::Bool(_) => "bool",
+            Scalar::Int(_) => "int",
+            Scalar::Float(_) => "float",
+            Scalar::Color(_) => "color",
+            Scalar::Dimension(_) => "dimension",
+            Scalar::Str(_) => "string",
+        }
+    }
+}
+
 /// How a property value was written in the source document.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum QuoteStyle {
@@ -406,6 +497,14 @@ impl<'a> ParsedField<'a> {
     pub fn quote_style(&self) -> Option<QuoteStyle> {
         match self {
             ParsedField::CommonText { quote, .. } => Some(*quote),
+            _ => None,
+        }
+    }
+
+    /// Classifies the value of a [`ParsedField::CommonText`] into a typed [`Scalar`].
+    pub fn scalar(&self) -> Option<Scalar<'a>> {
+        match self {
+            ParsedField::CommonText { value, quote, .. } => Some(Scalar::classify(value, *quote)),
             _ => None,
         }
     }

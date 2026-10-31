@@ -97,7 +97,7 @@ pub mod object;
 pub mod de;
 
 pub use error::{ParseError, ParseErrorKind};
-pub use field::{Dimension, ParsedField, QuoteStyle};
+pub use field::{Dimension, ParsedField, QuoteStyle, Scalar};
 pub use malleable::{MalleablePatcher, RostBuilder};
 pub use query::{parse_blocks, BlockView, FieldIter};
 pub use watcher::{CentralWatcher, HotReloadWatcher, ReloadCallback};
@@ -537,6 +537,23 @@ impl Template {
     /// ```
     pub fn query_string(&self, path: &str) -> Option<std::borrow::Cow<'_, str>> {
         self.query_field(path).and_then(|f| f.string_value())
+    }
+
+    /// Queries a property as a typed [`Scalar`] using dot-notation or top-level key.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rost::{Scalar, Template};
+    ///
+    /// let t = Template::parse("#p { hp: 100, speed: 3.5, tint: #ff0000, w: 12px, id: \"007\" }").unwrap();
+    /// assert_eq!(t.query_scalar("p.hp"), Some(Scalar::Int(100)));
+    /// assert_eq!(t.query_scalar("p.speed"), Some(Scalar::Float(3.5)));
+    /// assert_eq!(t.query_scalar("p.tint"), Some(Scalar::Color(0xff0000)));
+    /// assert_eq!(t.query_scalar("p.id"), Some(Scalar::Str("007".into())));
+    /// ```
+    pub fn query_scalar(&self, path: &str) -> Option<Scalar<'_>> {
+        self.query_field(path).and_then(|f| f.scalar())
     }
 
     /// Queries an integer (`i64`) using dot-notation or top-level key.

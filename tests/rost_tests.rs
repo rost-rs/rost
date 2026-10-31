@@ -593,3 +593,27 @@ c: """raw\n kept"""
     assert_eq!(blocks.find_block("m").unwrap().get_string("s").unwrap(), "x\ny");
     assert_eq!(rost::field::unescape(r"\u{110000} \uD800 end\"), r"\u{110000} \uD800 end\");
 }
+
+#[test]
+fn test_scalar_classification() {
+    use rost::{Dimension, Scalar};
+    let src = "n: null\nt: true\ni: -42\nf: 1e-3\ng: .5\nc: #1e1e2e\ns: #abc\nd: 1.5rem\np: 75%\nw: easy\nq: \"true\"\nh: #zzz\nbig: 99999999999999999999\nneg: -inf\n";
+    let t = Template::parse(src).unwrap();
+    let s = |k| t.query_scalar(k).unwrap();
+    assert_eq!(s("n"), Scalar::Null);
+    assert_eq!(s("t"), Scalar::Bool(true));
+    assert_eq!(s("i"), Scalar::Int(-42));
+    assert_eq!(s("f"), Scalar::Float(0.001));
+    assert_eq!(s("g"), Scalar::Float(0.5));
+    assert_eq!(s("c"), Scalar::Color(0x1e1e2e));
+    assert_eq!(s("s"), Scalar::Color(0xaabbcc));
+    assert_eq!(s("d"), Scalar::Dimension(Dimension { value: 1.5, unit: "rem" }));
+    assert_eq!(s("p"), Scalar::Dimension(Dimension { value: 75.0, unit: "%" }));
+    assert_eq!(s("w"), Scalar::Str("easy".into()));
+    assert_eq!(s("q"), Scalar::Str("true".into()));
+    assert_eq!(s("h"), Scalar::Str("#zzz".into()));
+    assert_eq!(s("big"), Scalar::Float(99999999999999999999.0));
+    assert_eq!(s("neg"), Scalar::Str("-inf".into()));
+    assert_eq!(s("w").type_name(), "string");
+    assert_eq!(t.query_scalar("missing"), None);
+}

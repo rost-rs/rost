@@ -166,6 +166,11 @@ impl<'a> BlockView<'a> {
             .map(|s| s.trim_matches('"'))
     }
 
+    /// Retrieves a property as a typed [`Scalar`](crate::Scalar).
+    pub fn get_scalar(&self, key: &str) -> Option<crate::Scalar<'a>> {
+        self.get(key).and_then(|f| f.scalar())
+    }
+
     /// Retrieves a property as a string, decoding escapes in quoted values.
     pub fn get_string(&self, key: &str) -> Option<std::borrow::Cow<'a, str>> {
         self.get(key).and_then(|f| f.string_value())
