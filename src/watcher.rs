@@ -188,10 +188,10 @@ impl HotReloadWatcher {
     /// Subscribes to document updates via a channel receiver.
     pub fn subscribe(&self) -> Receiver<Template> {
         let (tx, rx) = channel();
-        if let Ok(mut files) = CentralWatcher::global().files.lock() {
-            if let Some(state) = files.get_mut(&self.path) {
-                state.subscribers.push(tx);
-            }
+        if let Ok(mut files) = CentralWatcher::global().files.lock()
+            && let Some(state) = files.get_mut(&self.path)
+        {
+            state.subscribers.push(tx);
         }
         rx
     }
@@ -201,10 +201,10 @@ impl HotReloadWatcher {
     where
         F: Fn(Template) + Send + Sync + 'static,
     {
-        if let Ok(mut files) = CentralWatcher::global().files.lock() {
-            if let Some(state) = files.get_mut(&self.path) {
-                state.callbacks.push(Arc::new(cb));
-            }
+        if let Ok(mut files) = CentralWatcher::global().files.lock()
+            && let Some(state) = files.get_mut(&self.path)
+        {
+            state.callbacks.push(Arc::new(cb));
         }
     }
 
@@ -213,10 +213,10 @@ impl HotReloadWatcher {
     /// Every handle has its own slot, so handles watching the same file never steal each
     /// other's updates.
     pub fn check_reload(&self) -> Option<Template> {
-        if let Ok(mut files) = CentralWatcher::global().files.lock() {
-            if let Some(state) = files.get_mut(&self.path) {
-                return state.pending.get_mut(&self.id).and_then(Option::take);
-            }
+        if let Ok(mut files) = CentralWatcher::global().files.lock()
+            && let Some(state) = files.get_mut(&self.path)
+        {
+            return state.pending.get_mut(&self.id).and_then(Option::take);
         }
         None
     }
@@ -224,12 +224,12 @@ impl HotReloadWatcher {
 
 impl Drop for HotReloadWatcher {
     fn drop(&mut self) {
-        if let Ok(mut files) = CentralWatcher::global().files.lock() {
-            if let Some(state) = files.get_mut(&self.path) {
-                state.pending.remove(&self.id);
-                if state.pending.is_empty() && state.subscribers.is_empty() && state.callbacks.is_empty() {
-                    files.remove(&self.path);
-                }
+        if let Ok(mut files) = CentralWatcher::global().files.lock()
+            && let Some(state) = files.get_mut(&self.path)
+        {
+            state.pending.remove(&self.id);
+            if state.pending.is_empty() && state.subscribers.is_empty() && state.callbacks.is_empty() {
+                files.remove(&self.path);
             }
         }
     }

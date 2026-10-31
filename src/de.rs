@@ -84,10 +84,10 @@ impl<'de, 'a> Deserializer<'de> for FieldDeserializer<'a> {
         if let Ok(v) = s.parse::<i64>() {
             return visitor.visit_i64(v);
         }
-        if s.starts_with('#') || s.starts_with("0x") || s.starts_with("0X") {
-            if let Some(u) = parse_fast_u32(s) {
-                return visitor.visit_u32(u);
-            }
+        if (s.starts_with('#') || s.starts_with("0x") || s.starts_with("0X"))
+            && let Some(u) = parse_fast_u32(s)
+        {
+            return visitor.visit_u32(u);
         }
         if let Some(f) = parse_fast_f64(s) {
             return visitor.visit_f64(f);

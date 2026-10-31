@@ -259,10 +259,10 @@ impl Template {
             if let Some(b) = self.find_block(block_sel) {
                 return Some((b, key));
             }
-            if let Some((_, sub_sel)) = block_sel.rsplit_once('.') {
-                if let Some(b) = self.find_block(sub_sel) {
-                    return Some((b, key));
-                }
+            if let Some((_, sub_sel)) = block_sel.rsplit_once('.')
+                && let Some(b) = self.find_block(sub_sel)
+            {
+                return Some((b, key));
             }
         }
         None
@@ -319,12 +319,12 @@ impl Template {
 
     /// Checks if the template has been updated on disk. If so, updates this template in-place and returns `true`.
     pub fn check_reload(&mut self) -> bool {
-        if let Some(w) = &self.watcher {
-            if let Some(new_tmpl) = w.check_reload() {
-                self.data = new_tmpl.data;
-                self.fields = new_tmpl.fields;
-                return true;
-            }
+        if let Some(w) = &self.watcher
+            && let Some(new_tmpl) = w.check_reload()
+        {
+            self.data = new_tmpl.data;
+            self.fields = new_tmpl.fields;
+            return true;
         }
         false
     }
