@@ -101,20 +101,24 @@ pub fn parse_with_diagnostics(raw: &[u8]) -> (Vec<u8>, Vec<ParseError>) {
 
 /// Receives diagnostics from the scanner.
 ///
-/// The lenient path uses [`NoDiagnostics`], whose empty inlined `report` lets the
-/// compiler strip every reporting branch, so strictness costs nothing when unused.
+/// The lenient path uses [`NoDiagnostics`], whose `ENABLED = false` and empty inlined
+/// `report` let the compiler strip every reporting branch and the bookkeeping behind it,
+/// so strictness costs nothing when unused.
 trait Diagnostics {
+    const ENABLED: bool;
     fn report(&mut self, kind: ParseErrorKind, span: Range<usize>);
 }
 
 struct NoDiagnostics;
 
 impl Diagnostics for NoDiagnostics {
+    const ENABLED: bool = false;
     #[inline(always)]
     fn report(&mut self, _: ParseErrorKind, _: Range<usize>) {}
 }
 
 impl Diagnostics for Vec<(ParseErrorKind, Range<usize>)> {
+    const ENABLED: bool = true;
     fn report(&mut self, kind: ParseErrorKind, span: Range<usize>) {
         self.push((kind, span));
     }
@@ -134,11 +138,14 @@ fn scan<D: Diagnostics>(raw: &[u8], diag: &mut D) -> Vec<u8> {
     let mut i = 0;
     let mut line: u32 = 1;
 
-    while i < len {
+    // Name spans of currently open blocks; only tracked when diagnostics are enabled.
+    let mut open_blocks: Vec<Range<usize>> = Vec::new();
+
+    'scan: while i < len {
         // 1. Vectorized / LUT whitespace skip and newline tracker
         loop {
             if i >= len {
-                return fields;
+                break 'scan;
             }
             let ws_type = WS_LUT[raw[i] as usize];
             if ws_type == 0 {
@@ -163,6 +170,9 @@ fn scan<D: Diagnostics>(raw: &[u8], diag: &mut D) -> Vec<u8> {
 
         // 3. Block closing delimiter '}'
         if raw[i] == b'}' {
+            if D::ENABLED && open_blocks.pop().is_none() {
+                diag.report(ParseErrorKind::UnexpectedCloseBrace, i..i + 1);
+            }
             emit_block_end(&mut fields, line);
             i += 1;
             continue;
@@ -184,6 +194,9 @@ fn scan<D: Diagnostics>(raw: &[u8], diag: &mut D) -> Vec<u8> {
             }
 
             if i < len && raw[i] == b'{' {
+                if D::ENABLED {
+                    open_blocks.push(start_name..start_name + name_len as usize);
+                }
                 emit_block_start(&mut fields, name_off, name_len, line);
                 i += 1;
                 continue;
@@ -250,6 +263,9 @@ fn scan<D: Diagnostics>(raw: &[u8], diag: &mut D) -> Vec<u8> {
                 }
 
                 if probe < len && raw[probe] == b'{' {
+                    if D::ENABLED {
+                        open_blocks.push(start_name..start_name + name_len as usize);
+                    }
                     emit_block_start(&mut fields, name_off, name_len, line);
                     i = probe + 1;
                 } else {
@@ -289,6 +305,9 @@ fn scan<D: Diagnostics>(raw: &[u8], diag: &mut D) -> Vec<u8> {
         match raw[i] {
             // Block start without leading '#' (e.g., palette { ... })
             b'{' => {
+                if D::ENABLED {
+                    open_blocks.push(key_start..key_start + key_len as usize);
+                }
                 emit_block_start(&mut fields, key_off, key_len, line);
                 i += 1;
             }
@@ -407,6 +426,9 @@ fn scan<D: Diagnostics>(raw: &[u8], diag: &mut D) -> Vec<u8> {
         }
     }
 
+    for span in open_blocks {
+        diag.report(ParseErrorKind::UnclosedBlock, span);
+    }
     fields
 }
 

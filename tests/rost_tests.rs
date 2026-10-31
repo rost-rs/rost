@@ -499,3 +499,14 @@ fn test_diagnostics_unterminated_enums_and_lists() {
     assert_eq!(diagnostics("a: 1\ninv [ \"spear\", [x]\n"), ["2:5: unterminated list: missing closing `]`"]);
     assert!(diagnostics("inv [ a, [b, c] ]\nstate | a,\n b |\n").is_empty());
 }
+
+#[test]
+fn test_diagnostics_block_balance() {
+    assert_eq!(diagnostics("a: 1\n}\n"), ["2:1: unexpected `}` without a matching block"]);
+    assert_eq!(
+        diagnostics("#outer {\n  inner {\n    x: 1\n  }\n"),
+        ["1:2: block is never closed: missing `}`"]
+    );
+    assert_eq!(diagnostics("@rule {\n"), ["1:2: block is never closed: missing `}`"]);
+    assert!(diagnostics("#a { b { c: 1 } }\n@r { x: 2 }\n").is_empty());
+}
