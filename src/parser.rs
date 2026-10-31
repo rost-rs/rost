@@ -558,8 +558,12 @@ pub fn read_u32(buf: &[u8], idx: usize) -> u32 {
 }
 
 /// Resolves a zero-copy string slice from the source buffer using offsets stored in bytecode.
+///
+/// Crate-private on purpose: it skips UTF-8 validation, which is only sound because
+/// `data` is validated when a [`Template`](crate::Template) is built and the parser only
+/// emits offsets that fall on ASCII delimiters (and therefore on char boundaries).
 #[inline(always)]
-pub fn resolve_slice<'a>(data: &'a [u8], fields: &[u8], idx: usize) -> &'a str {
+pub(crate) fn resolve_slice<'a>(data: &'a [u8], fields: &[u8], idx: usize) -> &'a str {
     let off = read_u32(fields, idx) as usize;
     let len = read_u32(fields, idx + 4) as usize;
     if off + len > data.len() {
