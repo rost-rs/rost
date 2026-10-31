@@ -59,7 +59,7 @@ assert_eq!(template.get_directive("theme"), Some("cyber-dark"));
 
 let blocks = template.blocks();
 assert_eq!(blocks[0].name, "button.primary");
-assert_eq!(blocks[0].get("width"), Some("140px"));
+assert_eq!(blocks[0].get_value("width"), Some("140px"));
 ```
 
 ### 2. Programmatic Document Building
@@ -71,7 +71,7 @@ let document = RostBuilder::new()
     .directive("theme", "cyberpunk")
     .property("font_size", "14px")
     .enumeration("modes", &["light", "dark"])
-    .build();
+    .finish();
 
 assert!(document.contains("@theme \"cyberpunk\""));
 ```
