@@ -5,6 +5,9 @@
 //! binary offset arena (`Vec<u8>`) at sustained throughputs exceeding 500 MB/s.
 
 use memchr::{memchr, memchr2, memchr3};
+use std::ops::Range;
+
+use crate::error::{ParseError, ParseErrorKind};
 
 /// Tag identifier for top-level `#Section` headers.
 pub const TAG_TITLE: u8 = 0x01;
@@ -69,6 +72,61 @@ const WS_LUT: [u8; 256] = {
 /// assert!(!bytecode.is_empty());
 /// ```
 pub fn parse_into_bytecode(raw: &[u8]) -> Vec<u8> {
+    scan(raw, &mut NoDiagnostics)
+}
+
+/// Parses raw bytes like [`parse_into_bytecode`] and also returns every diagnostic found.
+///
+/// The bytecode is identical to the lenient output: malformed constructs are skipped,
+/// but each one is reported as a [`ParseError`].
+///
+/// # Examples
+///
+/// ```
+/// use rost::parser::parse_with_diagnostics;
+///
+/// let (_, errors) = parse_with_diagnostics(b"title: \"unclosed\n");
+/// assert_eq!(errors.len(), 1);
+/// assert_eq!(errors[0].to_string(), "1:8: unterminated string literal");
+/// ```
+pub fn parse_with_diagnostics(raw: &[u8]) -> (Vec<u8>, Vec<ParseError>) {
+    let mut found = Vec::new();
+    let fields = scan(raw, &mut found);
+    let errors = found
+        .into_iter()
+        .map(|(kind, span)| ParseError::new(kind, raw, span))
+        .collect();
+    (fields, errors)
+}
+
+/// Receives diagnostics from the scanner.
+///
+/// The lenient path uses [`NoDiagnostics`], whose empty inlined `report` lets the
+/// compiler strip every reporting branch, so strictness costs nothing when unused.
+trait Diagnostics {
+    fn report(&mut self, kind: ParseErrorKind, span: Range<usize>);
+}
+
+struct NoDiagnostics;
+
+impl Diagnostics for NoDiagnostics {
+    #[inline(always)]
+    fn report(&mut self, _: ParseErrorKind, _: Range<usize>) {}
+}
+
+impl Diagnostics for Vec<(ParseErrorKind, Range<usize>)> {
+    fn report(&mut self, kind: ParseErrorKind, span: Range<usize>) {
+        self.push((kind, span));
+    }
+}
+
+/// Returns the position of the next `\n` at or after `from`, or the end of the buffer.
+#[inline]
+fn line_end(raw: &[u8], from: usize) -> usize {
+    memchr(b'\n', &raw[from.min(raw.len())..]).map_or(raw.len(), |p| from + p)
+}
+
+fn scan<D: Diagnostics>(raw: &[u8], diag: &mut D) -> Vec<u8> {
     let len = raw.len();
     // Pre-allocate assuming an average token density of one field per 24 bytes
     let mut fields = Vec::with_capacity((len / 24).max(1) * 21);
@@ -140,6 +198,7 @@ pub fn parse_into_bytecode(raw: &[u8]) -> Vec<u8> {
 
                     emit_directive(&mut fields, name_off, name_len, val_off, val_len, line);
                 } else {
+                    diag.report(ParseErrorKind::UnterminatedString, val_start - 1..line_end(raw, val_start));
                     i = val_start;
                 }
             } else {
@@ -179,7 +238,8 @@ pub fn parse_into_bytecode(raw: &[u8]) -> Vec<u8> {
 
                         emit_subtitle(&mut fields, name_off, name_len, val_off, val_len, line);
                     } else {
-                        i = val_start;
+                        diag.report(ParseErrorKind::UnterminatedString, val_start - 1..line_end(raw, val_start));
+                    i = val_start;
                     }
                 }
             } else {
@@ -249,7 +309,8 @@ pub fn parse_into_bytecode(raw: &[u8]) -> Vec<u8> {
 
                         emit_property(&mut fields, key_off, key_len, val_off, val_len, line);
                     } else {
-                        i = val_start;
+                        diag.report(ParseErrorKind::UnterminatedString, val_start - 1..line_end(raw, val_start));
+                    i = val_start;
                     }
                 } else {
                     let val_start = i;

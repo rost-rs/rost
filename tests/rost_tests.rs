@@ -473,3 +473,22 @@ fn test_serde_deserialization() {
 }
 
 
+
+fn diagnostics(src: &str) -> Vec<String> {
+    rost::parser::parse_with_diagnostics(src.as_bytes())
+        .1
+        .iter()
+        .map(ToString::to_string)
+        .collect()
+}
+
+#[test]
+fn test_diagnostics_unterminated_strings() {
+    assert_eq!(diagnostics("a: 1\nname: \"Valkyrie\n"), ["2:7: unterminated string literal"]);
+    assert_eq!(diagnostics("@theme \"dark\n"), ["1:8: unterminated string literal"]);
+    assert_eq!(diagnostics("##state \"hover\n"), ["1:9: unterminated string literal"]);
+    assert!(diagnostics("a: \"ok\"\nb: \"multi\nline\"\n").is_empty());
+    // Lenient bytecode is unchanged by diagnostics.
+    let src = b"a: 1\nname: \"broken\nb: 2\n";
+    assert_eq!(rost::parser::parse_with_diagnostics(src).0, rost::parser::parse_into_bytecode(src));
+}
