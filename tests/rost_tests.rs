@@ -716,3 +716,13 @@ mod serde_value_like {
         }
     }
 }
+
+#[test]
+fn test_unterminated_list_at_eof_does_not_underflow() {
+    for src in ["k[", "k [", "k [a", "#b { k [ x"] {
+        let t = Template::from_str(src);
+        let _ = t.read_fields();
+        assert!(Template::parse(src).is_err());
+    }
+    assert_eq!(Template::from_str("k [a").get("k").unwrap().list_items(), vec!["a"]);
+}
