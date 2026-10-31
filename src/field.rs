@@ -204,6 +204,206 @@ pub fn parse_fast_f64(raw: &str) -> Option<f64> {
     s.parse::<f64>().ok()
 }
 
+/// Decodes backslash escapes in a quoted string value.
+///
+/// Supported: `\n`, `\t`, `\r`, `\0`, `\"`, `\\`, `\/`, `\u{1F600}` (1–6 hex digits) and
+/// JSON-style `\uXXXX` (including surrogate pairs). Unknown or malformed escapes are kept
+/// verbatim. Borrows when there is nothing to decode.
+///
+/// # Examples
+///
+/// ```
+/// use rost::field::unescape;
+///
+/// assert_eq!(unescape(r#"say \"hi\"\n"#), "say \"hi\"\n");
+/// assert_eq!(unescape(r"\u{48}\u0069 \uD83D\uDE00"), "Hi 😀");
+/// assert!(matches!(unescape("plain"), std::borrow::Cow::Borrowed("plain")));
+/// ```
+pub fn unescape(s: &str) -> std::borrow::Cow<'_, str> {
+    use std::borrow::Cow;
+
+    let Some(first) = memchr::memchr(b'\\', s.as_bytes()) else {
+        return Cow::Borrowed(s);
+    };
+    let mut out = String::with_capacity(s.len());
+    out.push_str(&s[..first]);
+    let mut rest = &s[first..];
+    while let Some(pos) = rest.find('\\') {
+        out.push_str(&rest[..pos]);
+        let esc = &rest[pos + 1..];
+        let (decoded, consumed) = decode_escape(esc);
+        match decoded {
+            Some(c) => out.push(c),
+            None => out.push('\\'),
+        }
+        rest = &esc[if decoded.is_some() { consumed } else { 0 }..];
+    }
+    out.push_str(rest);
+    Cow::Owned(out)
+}
+
+/// Decodes one escape (the text right after a backslash): returns the char and the
+/// number of bytes consumed, or `None` when the escape is unknown or malformed.
+fn decode_escape(esc: &str) -> (Option<char>, usize) {
+    let simple = match esc.as_bytes().first() {
+        Some(b'n') => Some('\n'),
+        Some(b't') => Some('\t'),
+        Some(b'r') => Some('\r'),
+        Some(b'0') => Some('\0'),
+        Some(b'"') => Some('"'),
+        Some(b'\\') => Some('\\'),
+        Some(b'/') => Some('/'),
+        _ => None,
+    };
+    if simple.is_some() {
+        return (simple, 1);
+    }
+    if let Some(braced) = esc.strip_prefix("u{") {
+        if let Some(close) = braced.find('}')
+            && (1..=6).contains(&close)
+            && let Ok(code) = u32::from_str_radix(&braced[..close], 16)
+            && let Some(c) = char::from_u32(code)
+        {
+            return (Some(c), close + 3);
+        }
+        return (None, 0);
+    }
+    let hex4 = |s: &str| s.get(..4).and_then(|h| u16::from_str_radix(h, 16).ok());
+    if let Some(digits) = esc.strip_prefix('u')
+        && let Some(hi) = hex4(digits)
+    {
+        if let Some(c) = char::from_u32(hi as u32) {
+            return (Some(c), 5);
+        }
+        // High surrogate: must be followed by `\uXXXX` low surrogate.
+        if let Some(lo) = digits[4..].strip_prefix("\\u").and_then(hex4)
+            && let Some(Ok(c)) = char::decode_utf16([hi, lo]).next()
+        {
+            return (Some(c), 11);
+        }
+    }
+    (None, 0)
+}
+
+/// A property value classified into its type.
+///
+/// Bare tokens are typed by their shape; quoted and raw strings are always [`Scalar::Str`],
+/// so `"42"` stays a string while `42` is an integer.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Scalar<'a> {
+    /// `null`
+    Null,
+    /// `true` / `false`
+    Bool(bool),
+    /// Integer literal that fits `i64` (`42`, `-7`).
+    Int(i64),
+    /// Floating point literal (`3.14`, `-0.5`, `1e-3`).
+    Float(f64),
+    /// Hex color (`#fff`, `#1e1e2e`), packed as returned by [`parse_fast_u32`].
+    Color(u32),
+    /// Number with a unit (`120px`, `1.5rem`, `75%`).
+    Dimension(Dimension<'a>),
+    /// Any other bare token (`easy`, `rgba(1, 2, 3)`) or a quoted / raw string.
+    Str(std::borrow::Cow<'a, str>),
+}
+
+impl<'a> Scalar<'a> {
+    /// Classifies a value slice according to how it was quoted.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rost::field::{Scalar, QuoteStyle};
+    ///
+    /// assert_eq!(Scalar::classify("42", QuoteStyle::Bare), Scalar::Int(42));
+    /// assert_eq!(Scalar::classify("42", QuoteStyle::Quoted), Scalar::Str("42".into()));
+    /// assert_eq!(Scalar::classify("#ff0000", QuoteStyle::Bare), Scalar::Color(0xff0000));
+    /// assert!(matches!(Scalar::classify("12px", QuoteStyle::Bare), Scalar::Dimension(_)));
+    /// ```
+    pub fn classify(value: &'a str, quote: QuoteStyle) -> Self {
+        match quote {
+            QuoteStyle::Quoted => return Scalar::Str(unescape(value)),
+            QuoteStyle::Raw => return Scalar::Str(std::borrow::Cow::Borrowed(value)),
+            QuoteStyle::Bare => {}
+        }
+        let s = value.trim().trim_end_matches(';').trim_end();
+        match s {
+            "null" => return Scalar::Null,
+            "true" => return Scalar::Bool(true),
+            "false" => return Scalar::Bool(false),
+            _ => {}
+        }
+        let bytes = s.as_bytes();
+        if let Some(hex) = s.strip_prefix('#')
+            && matches!(hex.len(), 3 | 4 | 6 | 8)
+            && hex.bytes().all(|b| b.is_ascii_hexdigit())
+            && let Some(c) = parse_fast_u32(s)
+        {
+            return Scalar::Color(c);
+        }
+        let starts_numeric = matches!(
+            bytes,
+            [b'-' | b'+', b'0'..=b'9' | b'.', ..] | [b'0'..=b'9', ..] | [b'.', b'0'..=b'9', ..]
+        );
+        if starts_numeric {
+            if let Ok(i) = s.parse::<i64>() {
+                return Scalar::Int(i);
+            }
+            if let Ok(f) = s.parse::<f64>() {
+                return Scalar::Float(f);
+            }
+            if let Some(dim) = Dimension::parse(s)
+                && !dim.unit.is_empty()
+                && dim.unit.bytes().all(|b| b.is_ascii_alphabetic() || b == b'%')
+            {
+                return Scalar::Dimension(dim);
+            }
+        }
+        Scalar::Str(std::borrow::Cow::Borrowed(s))
+    }
+
+    /// Returns a short name of the value's type (`"int"`, `"color"`, …), for messages.
+    pub fn type_name(&self) -> &'static str {
+        match self {
+            Scalar::Null => "null",
+            Scalar::Bool(_) => "bool",
+            Scalar::Int(_) => "int",
+            Scalar::Float(_) => "float",
+            Scalar::Color(_) => "color",
+            Scalar::Dimension(_) => "dimension",
+            Scalar::Str(_) => "string",
+        }
+    }
+}
+
+/// How a property value was written in the source document.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum QuoteStyle {
+    /// Unquoted token (`width: 120px`); typed as number, color, dimension, bool, … on demand.
+    #[default]
+    Bare,
+    /// Double-quoted string (`title: "Hello"`); always a string, escapes apply.
+    Quoted,
+    /// Raw multi-line string (`body: """..."""`); always a string, taken verbatim.
+    Raw,
+}
+
+impl QuoteStyle {
+    /// Classifies the value slice `data[off..off + len]` by inspecting its delimiters.
+    #[inline]
+    pub(crate) fn detect(data: &[u8], off: usize, len: usize) -> Self {
+        let raw = crate::parser::RAW_QUOTE;
+        if off >= raw.len() && data[off - raw.len()..off] == *raw && data[off + len..].starts_with(raw) {
+            return Self::Raw;
+        }
+        if off >= 1 && data.get(off - 1) == Some(&b'"') && data.get(off + len) == Some(&b'"') {
+            Self::Quoted
+        } else {
+            Self::Bare
+        }
+    }
+}
+
 /// Represents an individual field or syntactic node extracted from a `.rost` document.
 ///
 /// Designed with zero allocations in mind: each field borrows its textual content
@@ -224,8 +424,11 @@ pub enum ParsedField<'a> {
     /// Common property or key-value pair defined with `:` (e.g., `width: 120px` or `color: "#ffffff"`).
     CommonText {
         name: &'a str,
+        /// Value without its surrounding quotes, if any.
         value: &'a str,
         line: u32,
+        /// How the value was written in the source.
+        quote: QuoteStyle,
     },
     /// Enumerated variants or state sets enclosed in pipes `| ... |` (e.g., `state | idle, hover, active |`).
     Enum {
@@ -264,6 +467,34 @@ pub enum ParsedField<'a> {
 }
 
 impl<'a> ParsedField<'a> {
+    /// Returns how the value of a [`ParsedField::CommonText`] was written, if this is one.
+    #[inline]
+    pub fn quote_style(&self) -> Option<QuoteStyle> {
+        match self {
+            ParsedField::CommonText { quote, .. } => Some(*quote),
+            _ => None,
+        }
+    }
+
+    /// Classifies the value of a [`ParsedField::CommonText`] into a typed [`Scalar`].
+    pub fn scalar(&self) -> Option<Scalar<'a>> {
+        match self {
+            ParsedField::CommonText { value, quote, .. } => Some(Scalar::classify(value, *quote)),
+            _ => None,
+        }
+    }
+
+    /// Returns the value as a string with escapes decoded for quoted values.
+    ///
+    /// Bare and raw values are returned verbatim (borrowed); quoted values go through
+    /// [`unescape`], which only allocates when an escape is present.
+    pub fn string_value(&self) -> Option<std::borrow::Cow<'a, str>> {
+        match self {
+            ParsedField::CommonText { value, quote: QuoteStyle::Quoted, .. } => Some(unescape(value)),
+            _ => self.value().map(std::borrow::Cow::Borrowed),
+        }
+    }
+
     /// Returns the primary identifier or key name of the field.
     #[inline]
     pub fn name(&self) -> &'a str {

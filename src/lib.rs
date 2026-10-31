@@ -82,6 +82,7 @@
 //! assert_eq!(dim.unit, "px");
 //! ```
 
+pub mod error;
 pub mod field;
 pub mod malleable;
 pub mod parser;
@@ -93,7 +94,8 @@ pub mod object;
 #[cfg(feature = "serde")]
 pub mod de;
 
-pub use field::{Dimension, ParsedField};
+pub use error::{ParseError, ParseErrorKind};
+pub use field::{Dimension, ParsedField, QuoteStyle, Scalar};
 pub use malleable::{MalleablePatcher, RostBuilder};
 pub use query::{parse_blocks, BlockView, FieldIter};
 pub use watcher::{CentralWatcher, HotReloadWatcher, ReloadCallback};
@@ -180,7 +182,64 @@ impl Template {
         }
     }
 
-    /// Creates and parses a [`Template`] from a string slice.
+    /// Parses a document strictly, failing on the first malformed construct.
+    ///
+    /// Use this for configuration and data you want validated: unterminated strings,
+    /// enums or lists, unbalanced braces, keys without an operator and duplicate keys are
+    /// all rejected with a [`ParseError`] pointing at the exact line and column.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rost::Template;
+    ///
+    /// let ok = Template::parse("#window { width: 500px }").unwrap();
+    /// assert_eq!(ok.query_dim("window.width"), Some(500.0));
+    ///
+    /// let src = "#window {\n    width 500px\n}";
+    /// let err = Template::parse(src).unwrap_err();
+    /// assert_eq!(err.to_string(), "2:5: expected `:`, `=`, `|`, `[` or `{` after key");
+    /// eprintln!("{}", err.render(src));
+    /// ```
+    pub fn parse(src: &str) -> Result<Self, ParseError> {
+        let (fields, errors) = parser::parse_with_diagnostics(src.as_bytes());
+        if let Some(first) = errors.into_iter().min_by_key(|e| e.span.start) {
+            return Err(first);
+        }
+        Ok(Self {
+            path: PathBuf::new(),
+            data: src.as_bytes().to_vec(),
+            fields,
+            watcher: None,
+        })
+    }
+
+    /// Parses a document leniently: never fails, silently skipping malformed constructs.
+    ///
+    /// Equivalent to [`Template::from_str`]; prefer [`Template::parse`] unless you need
+    /// best-effort reading of partially broken input (e.g. while a file is being edited).
+    pub fn parse_lenient(src: &str) -> Self {
+        Self::from_str(src)
+    }
+
+    /// Returns every diagnostic for `src`, ordered by position (empty when well-formed).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rost::Template;
+    ///
+    /// let errors = Template::check("a: 1\na: 2\n}\n");
+    /// assert_eq!(errors.len(), 2);
+    /// assert_eq!(errors[0].line, 2);
+    /// ```
+    pub fn check(src: &str) -> Vec<ParseError> {
+        let mut errors = parser::parse_with_diagnostics(src.as_bytes()).1;
+        errors.sort_by_key(|e| e.span.start);
+        errors
+    }
+
+    /// Creates and parses a [`Template`] from a string slice (lenient, see [`Template::parse_lenient`]).
     #[allow(clippy::should_implement_trait)]
     pub fn from_str(content: &str) -> Self {
         Self::from_utf8_unchecked(content.as_bytes().to_vec())
@@ -209,9 +268,23 @@ impl Template {
         self.iter().collect()
     }
 
-    /// Retrieves the first field matching the provided key or identifier.
+    /// Retrieves the first top-level field matching the provided key or identifier.
+    ///
+    /// Fields nested inside blocks are not visible here; address them with a dot path
+    /// through [`Template::query_field`] (e.g. `"button.width"`).
     pub fn get(&self, key: &str) -> Option<ParsedField<'_>> {
-        self.iter().find(|f| f.name() == key)
+        let mut depth: usize = 0;
+        for field in self.iter() {
+            if depth == 0 && field.name() == key {
+                return Some(field);
+            }
+            match field {
+                ParsedField::BlockStart { .. } => depth += 1,
+                ParsedField::BlockEnd { .. } => depth = depth.saturating_sub(1),
+                _ => {}
+            }
+        }
+        None
     }
 
     /// Retrieves the string value of the first property matching `key`.
@@ -475,6 +548,37 @@ impl Template {
                 .map(str::trim)
                 .map(|s| s.trim_matches('"'))
         }
+    }
+
+    /// Queries a string using dot-notation or top-level key, decoding escapes in quoted values.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rost::Template;
+    ///
+    /// let t = Template::parse(r#"#msg { text: "line 1\nline \"2\"" }"#).unwrap();
+    /// assert_eq!(t.query_string("msg.text").as_deref(), Some("line 1\nline \"2\""));
+    /// ```
+    pub fn query_string(&self, path: &str) -> Option<std::borrow::Cow<'_, str>> {
+        self.query_field(path).and_then(|f| f.string_value())
+    }
+
+    /// Queries a property as a typed [`Scalar`] using dot-notation or top-level key.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rost::{Scalar, Template};
+    ///
+    /// let t = Template::parse("#p { hp: 100, speed: 3.5, tint: #ff0000, w: 12px, id: \"007\" }").unwrap();
+    /// assert_eq!(t.query_scalar("p.hp"), Some(Scalar::Int(100)));
+    /// assert_eq!(t.query_scalar("p.speed"), Some(Scalar::Float(3.5)));
+    /// assert_eq!(t.query_scalar("p.tint"), Some(Scalar::Color(0xff0000)));
+    /// assert_eq!(t.query_scalar("p.id"), Some(Scalar::Str("007".into())));
+    /// ```
+    pub fn query_scalar(&self, path: &str) -> Option<Scalar<'_>> {
+        self.query_field(path).and_then(|f| f.scalar())
     }
 
     /// Queries an integer (`i64`) using dot-notation or top-level key.

@@ -710,3 +710,256 @@ fn test_hot_reload_is_opt_in() {
     assert!(Template::load_watched(&path).unwrap().is_hot_reload_enabled());
     let _ = std::fs::remove_file(&path);
 }
+
+fn diagnostics(src: &str) -> Vec<String> {
+    rost::parser::parse_with_diagnostics(src.as_bytes())
+        .1
+        .iter()
+        .map(ToString::to_string)
+        .collect()
+}
+
+#[test]
+fn test_diagnostics_unterminated_strings() {
+    assert_eq!(diagnostics("a: 1\nname: \"Valkyrie\n"), ["2:7: unterminated string literal"]);
+    assert_eq!(diagnostics("@theme \"dark\n"), ["1:8: unterminated string literal"]);
+    assert_eq!(diagnostics("##state \"hover\n"), ["1:9: unterminated string literal"]);
+    assert!(diagnostics("a: \"ok\"\nb: \"multi\nline\"\n").is_empty());
+    // Lenient bytecode is unchanged by diagnostics.
+    let src = b"a: 1\nname: \"broken\nb: 2\n";
+    assert_eq!(rost::parser::parse_with_diagnostics(src).0, rost::parser::parse_into_bytecode(src));
+}
+
+#[test]
+fn test_diagnostics_unterminated_enums_and_lists() {
+    assert_eq!(diagnostics("state | idle, hover\n"), ["1:7: unterminated enum: missing closing `|`"]);
+    assert_eq!(diagnostics("a: 1\ninv [ \"spear\", [x]\n"), ["2:5: unterminated list: missing closing `]`"]);
+    assert!(diagnostics("inv [ a, [b, c] ]\nstate | a,\n b |\n").is_empty());
+}
+
+#[test]
+fn test_diagnostics_block_balance() {
+    assert_eq!(diagnostics("a: 1\n}\n"), ["2:1: unexpected `}` without a matching block"]);
+    assert_eq!(
+        diagnostics("#outer {\n  inner {\n    x: 1\n  }\n"),
+        ["1:2: block is never closed: missing `}`"]
+    );
+    assert_eq!(diagnostics("@rule {\n"), ["1:2: block is never closed: missing `}`"]);
+    assert!(diagnostics("#a { b { c: 1 } }\n@r { x: 2 }\n").is_empty());
+}
+
+#[test]
+fn test_diagnostics_missing_operator() {
+    assert_eq!(
+        diagnostics("a: 1\nwidth 120px\n"),
+        ["2:1: expected `:`, `=`, `|`, `[` or `{` after key"]
+    );
+    assert_eq!(diagnostics("dangling"), ["1:1: expected `:`, `=`, `|`, `[` or `{` after key"]);
+    assert!(diagnostics("a: 1, b = f()\nc | x |\nd [ y ]\ne { }\n#T\n##s \"v\"\n@d v\n").is_empty());
+}
+
+#[test]
+fn test_diagnostics_duplicate_keys() {
+    assert_eq!(diagnostics("a: 1\nb: 2\na: 3\n"), ["3:1: duplicate key `a` in the same scope"]);
+    assert_eq!(
+        diagnostics("#btn {\n w: 1\n state | a |\n state [ b ]\n}\n"),
+        ["4:2: duplicate key `state` in the same scope"]
+    );
+    // Same key in different scopes, or after a scope closes, is fine.
+    assert!(diagnostics("w: 1\n#a { w: 2 }\n#b { w: 3, inner { w: 4 } }\n").is_empty());
+}
+
+#[test]
+fn test_strict_parse_api() {
+    let t = Template::parse("@theme \"dark\"\n#btn { w: 10px }\n").expect("well-formed");
+    assert_eq!(t.get_directive("theme"), Some("dark"));
+    assert_eq!(t.query_dim("btn.w"), Some(10.0));
+
+    // The first error by position is returned, even if reported later (unclosed block).
+    let err = Template::parse("#a {\n x: 1\n x: 2\n").unwrap_err();
+    assert_eq!(err.kind, rost::ParseErrorKind::UnclosedBlock);
+    assert_eq!((err.line, err.column), (1, 2));
+
+    let all = Template::check("#a {\n x: 1\n x: 2\n");
+    assert_eq!(all.len(), 2);
+    assert_eq!(all[1].kind, rost::ParseErrorKind::DuplicateKey("x".into()));
+
+    // Lenient parsing still accepts the same input.
+    assert_eq!(Template::parse_lenient("#a {\n x: 1\n").query_i64("a.x"), Some(1));
+}
+
+#[test]
+fn test_quote_style_is_recorded() {
+    use rost::QuoteStyle;
+    let t = Template::parse("a: 120px\nb: \"120px\"\nc: \"\"\n").unwrap();
+    assert_eq!(t.get("a").unwrap().quote_style(), Some(QuoteStyle::Bare));
+    assert_eq!(t.get("b").unwrap().quote_style(), Some(QuoteStyle::Quoted));
+    assert_eq!(t.get("c").unwrap().quote_style(), Some(QuoteStyle::Quoted));
+    assert_eq!(t.get("c").unwrap().value(), Some(""));
+}
+
+#[test]
+fn test_raw_multiline_strings() {
+    use rost::QuoteStyle;
+    let src = "#doc {\n  body: \"\"\"\n  Hello, \"world\" \\n {not a block}\n  \"\"\"\n  empty: \"\"\"\"\"\"\n  after: 1\n}\n";
+    let t = Template::parse(src).expect("raw strings parse strictly");
+    let body = t.query_field("doc.body").unwrap();
+    assert_eq!(body.quote_style(), Some(QuoteStyle::Raw));
+    assert_eq!(body.value(), Some("\n  Hello, \"world\" \\n {not a block}\n  "));
+    assert_eq!(t.query_field("doc.empty").unwrap().quote_style(), Some(QuoteStyle::Raw));
+    assert_eq!(t.query_field("doc.empty").unwrap().value(), Some(""));
+    assert_eq!(t.query_i64("doc.after"), Some(1));
+    assert_eq!(t.query_field("doc.empty").unwrap().line(), 5);
+
+    let err = Template::parse("a: \"\"\"never closed\n").unwrap_err();
+    assert_eq!(err.kind, rost::ParseErrorKind::UnterminatedString);
+}
+
+#[test]
+fn test_string_escapes_are_decoded() {
+    let src = r#"
+a: "tab\there \"quoted\" back\\slash \u{1F980} é bad\q"
+b: raw\nbare
+c: """raw\n kept"""
+"#;
+    let t = Template::parse(src).unwrap();
+    assert_eq!(t.query_string("a").unwrap(), "tab\there \"quoted\" back\\slash 🦀 é bad\\q");
+    assert_eq!(t.query_string("b").unwrap(), "raw\\nbare");
+    assert_eq!(t.query_string("c").unwrap(), "raw\\n kept");
+    let blocks = Template::parse("#m { s: \"x\\ny\" }").unwrap();
+    assert_eq!(blocks.find_block("m").unwrap().get_string("s").unwrap(), "x\ny");
+    assert_eq!(rost::field::unescape(r"\u{110000} \uD800 end\"), r"\u{110000} \uD800 end\");
+}
+
+#[test]
+fn test_scalar_classification() {
+    use rost::{Dimension, Scalar};
+    let src = "n: null\nt: true\ni: -42\nf: 1e-3\ng: .5\nc: #1e1e2e\ns: #abc\nd: 1.5rem\np: 75%\nw: easy\nq: \"true\"\nh: #zzz\nbig: 99999999999999999999\nneg: -inf\n";
+    let t = Template::parse(src).unwrap();
+    let s = |k| t.query_scalar(k).unwrap();
+    assert_eq!(s("n"), Scalar::Null);
+    assert_eq!(s("t"), Scalar::Bool(true));
+    assert_eq!(s("i"), Scalar::Int(-42));
+    assert_eq!(s("f"), Scalar::Float(0.001));
+    assert_eq!(s("g"), Scalar::Float(0.5));
+    assert_eq!(s("c"), Scalar::Color(0x1e1e2e));
+    assert_eq!(s("s"), Scalar::Color(0xaabbcc));
+    assert_eq!(s("d"), Scalar::Dimension(Dimension { value: 1.5, unit: "rem" }));
+    assert_eq!(s("p"), Scalar::Dimension(Dimension { value: 75.0, unit: "%" }));
+    assert_eq!(s("w"), Scalar::Str("easy".into()));
+    assert_eq!(s("q"), Scalar::Str("true".into()));
+    assert_eq!(s("h"), Scalar::Str("#zzz".into()));
+    assert_eq!(s("big"), Scalar::Float(99999999999999999999.0));
+    assert_eq!(s("neg"), Scalar::Str("-inf".into()));
+    assert_eq!(s("w").type_name(), "string");
+    assert_eq!(t.query_scalar("missing"), None);
+}
+
+#[test]
+fn test_top_level_get_does_not_see_nested_fields() {
+    let t = Template::parse("#a { x: 1 }\n#b { x: 2 }\ny: 3\n").unwrap();
+    assert_eq!(t.get_value("x"), None);
+    assert_eq!(t.get_value("y"), Some("3"));
+    assert_eq!(t.query_i64("a.x"), Some(1));
+    assert_eq!(t.query_i64("b.x"), Some(2));
+    let t = Template::parse("#a { x: 1 }\nx: 9\n").unwrap();
+    assert_eq!(t.get_value("x"), Some("9"));
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn test_from_template_reads_top_level_properties() {
+    use serde::Deserialize;
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct Window {
+        width: u32,
+    }
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct App {
+        name: String,
+        volume: f32,
+        tags: Vec<String>,
+        window: Window,
+    }
+
+    let t = Template::parse("name: \"rost\"\nvolume: 0.5\ntags [a, b]\n#window { width: 800 }\n").unwrap();
+    let app: App = rost::from_template(&t).expect("deserialize root");
+    assert_eq!(
+        app,
+        App { name: "rost".into(), volume: 0.5, tags: vec!["a".into(), "b".into()], window: Window { width: 800 } }
+    );
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn test_serde_honours_quoting_escapes_and_null() {
+    use serde::Deserialize;
+    use std::collections::HashMap;
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct Msg {
+        text: String,
+        raw: String,
+        nick: Option<String>,
+        code: String,
+    }
+
+    let src = "#m {\n text: \"a\\tb \\\"c\\\"\"\n raw: \"\"\"x\\ny\"\"\"\n nick: null\n code: \"007\"\n}\n";
+    let t = Template::parse(src).unwrap();
+    let m: Msg = t.deserialize("m").expect("deserialize");
+    assert_eq!(m, Msg { text: "a\tb \"c\"".into(), raw: "x\\ny".into(), nick: None, code: "007".into() });
+
+    // Untyped maps keep quoted numbers as strings.
+    let any: HashMap<String, serde_value_like::Value> = t.deserialize("m").unwrap();
+    assert_eq!(any["code"], serde_value_like::Value::Str("007".into()));
+
+    let blocks = t.blocks();
+    let via_block: Msg = rost::from_block(&blocks[0]).unwrap();
+    assert_eq!(via_block.text, "a\tb \"c\"");
+}
+
+/// Minimal self-describing value used to observe what `deserialize_any` produces.
+#[cfg(feature = "serde")]
+mod serde_value_like {
+    use serde::de::{Deserialize, Deserializer, Visitor};
+
+    #[derive(Debug, PartialEq)]
+    pub enum Value {
+        Num,
+        Str(String),
+        Other,
+    }
+
+    impl<'de> Deserialize<'de> for Value {
+        fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+            struct V;
+            impl<'de> Visitor<'de> for V {
+                type Value = Value;
+                fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                    f.write_str("any value")
+                }
+                fn visit_u32<E>(self, _: u32) -> Result<Value, E> { Ok(Value::Num) }
+                fn visit_u64<E>(self, _: u64) -> Result<Value, E> { Ok(Value::Num) }
+                fn visit_f32<E>(self, _: f32) -> Result<Value, E> { Ok(Value::Num) }
+                fn visit_f64<E>(self, _: f64) -> Result<Value, E> { Ok(Value::Num) }
+                fn visit_str<E>(self, s: &str) -> Result<Value, E> { Ok(Value::Str(s.into())) }
+                fn visit_string<E>(self, s: String) -> Result<Value, E> { Ok(Value::Str(s)) }
+                fn visit_unit<E>(self) -> Result<Value, E> { Ok(Value::Other) }
+                fn visit_bool<E>(self, _: bool) -> Result<Value, E> { Ok(Value::Other) }
+            }
+            d.deserialize_any(V)
+        }
+    }
+}
+
+#[test]
+fn test_unterminated_list_at_eof_does_not_underflow() {
+    for src in ["k[", "k [", "k [a", "#b { k [ x"] {
+        let t = Template::from_str(src);
+        let _ = t.read_fields();
+        assert!(Template::parse(src).is_err());
+    }
+    assert_eq!(Template::from_str("k [a").get("k").unwrap().list_items(), vec!["a"]);
+}

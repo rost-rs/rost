@@ -5,6 +5,13 @@
 //! binary offset arena (`Vec<u8>`) at sustained throughputs exceeding 500 MB/s.
 
 use memchr::{memchr, memchr2, memchr3};
+use std::collections::HashSet;
+use std::ops::Range;
+
+use crate::error::{ParseError, ParseErrorKind};
+
+/// Delimiter of raw multi-line strings (`"""..."""`).
+pub(crate) const RAW_QUOTE: &[u8] = b"\"\"\"";
 
 /// Tag identifier for top-level `#Section` headers.
 pub const TAG_TITLE: u8 = 0x01;
@@ -97,6 +104,84 @@ const WS_LUT: [u8; 256] = {
 /// assert!(!bytecode.is_empty());
 /// ```
 pub fn parse_into_bytecode(raw: &[u8]) -> Vec<u8> {
+    scan(raw, &mut NoDiagnostics)
+}
+
+/// Parses raw bytes like [`parse_into_bytecode`] and also returns every diagnostic found.
+///
+/// The bytecode is identical to the lenient output: malformed constructs are skipped,
+/// but each one is reported as a [`ParseError`].
+///
+/// # Examples
+///
+/// ```
+/// use rost::parser::parse_with_diagnostics;
+///
+/// let (_, errors) = parse_with_diagnostics(b"title: \"unclosed\n");
+/// assert_eq!(errors.len(), 1);
+/// assert_eq!(errors[0].to_string(), "1:8: unterminated string literal");
+/// ```
+pub fn parse_with_diagnostics(raw: &[u8]) -> (Vec<u8>, Vec<ParseError>) {
+    let mut found = Vec::new();
+    let fields = scan(raw, &mut found);
+    let errors = found
+        .into_iter()
+        .map(|(kind, span)| ParseError::new(kind, raw, span))
+        .collect();
+    (fields, errors)
+}
+
+/// Receives diagnostics from the scanner.
+///
+/// The lenient path uses [`NoDiagnostics`], whose `ENABLED = false` and empty inlined
+/// `report` let the compiler strip every reporting branch and the bookkeeping behind it,
+/// so strictness costs nothing when unused.
+trait Diagnostics {
+    const ENABLED: bool;
+    fn report(&mut self, kind: ParseErrorKind, span: Range<usize>);
+}
+
+struct NoDiagnostics;
+
+impl Diagnostics for NoDiagnostics {
+    const ENABLED: bool = false;
+    #[inline(always)]
+    fn report(&mut self, _: ParseErrorKind, _: Range<usize>) {}
+}
+
+impl Diagnostics for Vec<(ParseErrorKind, Range<usize>)> {
+    const ENABLED: bool = true;
+    fn report(&mut self, kind: ParseErrorKind, span: Range<usize>) {
+        self.push((kind, span));
+    }
+}
+
+/// Records `key` in the innermost scope and reports it if it was already defined there.
+#[inline(always)]
+fn check_duplicate<'r, D: Diagnostics>(
+    diag: &mut D,
+    scopes: &mut [HashSet<&'r [u8]>],
+    raw: &'r [u8],
+    key: Range<usize>,
+) {
+    if !D::ENABLED {
+        return;
+    }
+    if let Some(scope) = scopes.last_mut()
+        && !scope.insert(&raw[key.clone()])
+    {
+        let name = String::from_utf8_lossy(&raw[key.clone()]).into_owned();
+        diag.report(ParseErrorKind::DuplicateKey(name), key);
+    }
+}
+
+/// Returns the position of the next `\n` at or after `from`, or the end of the buffer.
+#[inline]
+fn line_end(raw: &[u8], from: usize) -> usize {
+    memchr(b'\n', &raw[from.min(raw.len())..]).map_or(raw.len(), |p| from + p)
+}
+
+fn scan<D: Diagnostics>(raw: &[u8], diag: &mut D) -> Vec<u8> {
     let len = raw.len();
     // Pre-allocate assuming an average token density of one field per 24 bytes
     let mut fields = Vec::with_capacity((len / 24).max(1) * 21);
@@ -104,11 +189,16 @@ pub fn parse_into_bytecode(raw: &[u8]) -> Vec<u8> {
     let mut i = 0;
     let mut line: u32 = 1;
 
-    while i < len {
+    // Name spans of currently open blocks; only tracked when diagnostics are enabled.
+    let mut open_blocks: Vec<Range<usize>> = Vec::new();
+    // Keys defined in each open scope (root first); only tracked when diagnostics are enabled.
+    let mut scopes: Vec<HashSet<&[u8]>> = if D::ENABLED { vec![HashSet::new()] } else { Vec::new() };
+
+    'scan: while i < len {
         // 1. Vectorized / LUT whitespace skip and newline tracker
         loop {
             if i >= len {
-                return fields;
+                break 'scan;
             }
             let ws_type = WS_LUT[raw[i] as usize];
             if ws_type == 0 {
@@ -133,6 +223,13 @@ pub fn parse_into_bytecode(raw: &[u8]) -> Vec<u8> {
 
         // 3. Block closing delimiter '}'
         if raw[i] == b'}' {
+            if D::ENABLED {
+                if open_blocks.pop().is_some() {
+                    scopes.pop();
+                } else {
+                    diag.report(ParseErrorKind::UnexpectedCloseBrace, i..i + 1);
+                }
+            }
             emit_block_end(&mut fields, line);
             i += 1;
             continue;
@@ -154,6 +251,10 @@ pub fn parse_into_bytecode(raw: &[u8]) -> Vec<u8> {
             }
 
             if i < len && raw[i] == b'{' {
+                if D::ENABLED {
+                    open_blocks.push(start_name..start_name + name_len as usize);
+                    scopes.push(HashSet::new());
+                }
                 emit_block_start(&mut fields, name_off, name_len, line);
                 i += 1;
                 continue;
@@ -169,7 +270,10 @@ pub fn parse_into_bytecode(raw: &[u8]) -> Vec<u8> {
                     emit_directive(&mut fields, name_off, name_len, val_off, val_len, line);
                     line += count_newlines(&raw[val_start..val_start + quote_end]);
                 } else {
-                    i = val_start;
+                    let end = line_end(raw, val_start);
+                    diag.report(ParseErrorKind::UnterminatedString, val_start - 1..end);
+                    // Skip the rest of the line instead of re-reading the string body as keys.
+                    i = end;
                 }
             } else {
                 let val_start = i;
@@ -210,7 +314,10 @@ pub fn parse_into_bytecode(raw: &[u8]) -> Vec<u8> {
                         emit_subtitle(&mut fields, name_off, name_len, val_off, val_len, line);
                         line += count_newlines(&raw[val_start..val_start + quote_end]);
                     } else {
-                        i = val_start;
+                        let end = line_end(raw, val_start);
+                    diag.report(ParseErrorKind::UnterminatedString, val_start - 1..end);
+                    // Skip the rest of the line instead of re-reading the string body as keys.
+                    i = end;
                     }
                 }
             } else {
@@ -221,6 +328,10 @@ pub fn parse_into_bytecode(raw: &[u8]) -> Vec<u8> {
                 }
 
                 if probe < len && raw[probe] == b'{' {
+                    if D::ENABLED {
+                        open_blocks.push(start_name..start_name + name_len as usize);
+                        scopes.push(HashSet::new());
+                    }
                     emit_block_start(&mut fields, name_off, name_len, line);
                     i = probe + 1;
                 } else {
@@ -254,12 +365,17 @@ pub fn parse_into_bytecode(raw: &[u8]) -> Vec<u8> {
             i += 1;
         }
         if i >= len {
+            diag.report(ParseErrorKind::ExpectedOperator, key_start..key_start + key_len as usize);
             break;
         }
 
         match raw[i] {
             // Block start without leading '#' (e.g., palette { ... })
             b'{' => {
+                if D::ENABLED {
+                    open_blocks.push(key_start..key_start + key_len as usize);
+                    scopes.push(HashSet::new());
+                }
                 emit_block_start(&mut fields, key_off, key_len, line);
                 i += 1;
             }
@@ -271,17 +387,33 @@ pub fn parse_into_bytecode(raw: &[u8]) -> Vec<u8> {
                     i += 1;
                 }
 
-                if i < len && raw[i] == b'"' {
+                if raw[i..].starts_with(RAW_QUOTE) {
+                    // Raw multi-line string: """ ... """ (no escape processing)
+                    let val_start = i + RAW_QUOTE.len();
+                    if let Some(body_len) = memchr::memmem::find(&raw[val_start..], RAW_QUOTE) {
+                        check_duplicate(diag, &mut scopes, raw, key_start..key_start + key_len as usize);
+                        emit_property(&mut fields, key_off, key_len, val_start as u32, body_len as u32, line);
+                        line += memchr::Memchr::new(b'\n', &raw[val_start..val_start + body_len]).count() as u32;
+                        i = val_start + body_len + RAW_QUOTE.len();
+                    } else {
+                        diag.report(ParseErrorKind::UnterminatedString, i..len);
+                        i = len;
+                    }
+                } else if i < len && raw[i] == b'"' {
                     let val_start = i + 1;
                     if let Some(quote_end) = find_unescaped_quote(&raw[val_start..]) {
                         let val_off = val_start as u32;
                         let val_len = quote_end as u32;
                         i = val_start + quote_end + 1;
 
+                        check_duplicate(diag, &mut scopes, raw, key_start..key_start + key_len as usize);
                         emit_property(&mut fields, key_off, key_len, val_off, val_len, line);
                         line += count_newlines(&raw[val_start..val_start + quote_end]);
                     } else {
-                        i = val_start;
+                        let end = line_end(raw, val_start);
+                    diag.report(ParseErrorKind::UnterminatedString, val_start - 1..end);
+                    // Skip the rest of the line instead of re-reading the string body as keys.
+                    i = end;
                     }
                 } else {
                     let val_start = i;
@@ -299,6 +431,7 @@ pub fn parse_into_bytecode(raw: &[u8]) -> Vec<u8> {
                     };
 
                     let trimmed_len = trim_trailing_ws(raw, val_start, val_end);
+                    check_duplicate(diag, &mut scopes, raw, key_start..key_start + key_len as usize);
                     emit_property(&mut fields, key_off, key_len, val_start as u32, trimmed_len as u32, line);
                     i = next_i;
                 }
@@ -318,8 +451,10 @@ pub fn parse_into_bytecode(raw: &[u8]) -> Vec<u8> {
                     i = body_start + end_bar + 1;
                     let end_line = line;
 
+                    check_duplicate(diag, &mut scopes, raw, key_start..key_start + key_len as usize);
                     emit_enum(&mut fields, key_off, key_len, body_off, body_len, start_line, end_line);
                 } else {
+                    diag.report(ParseErrorKind::UnterminatedEnum, body_start - 1..line_end(raw, body_start));
                     i = len;
                 }
             }
@@ -339,11 +474,18 @@ pub fn parse_into_bytecode(raw: &[u8]) -> Vec<u8> {
                     }
                     i += 1;
                 }
-                let body_end = i.saturating_sub(1);
+                // A closed list ends before its `]`; an unterminated one runs to EOF.
+                let body_end = if depth > 0 {
+                    diag.report(ParseErrorKind::UnterminatedList, body_start - 1..line_end(raw, body_start));
+                    i
+                } else {
+                    i - 1
+                };
                 let body_off = body_start as u32;
                 let body_len = (body_end - body_start) as u32;
                 let end_line = line;
 
+                check_duplicate(diag, &mut scopes, raw, key_start..key_start + key_len as usize);
                 emit_list(&mut fields, key_off, key_len, body_off, body_len, start_line, end_line);
             }
 
@@ -361,16 +503,26 @@ pub fn parse_into_bytecode(raw: &[u8]) -> Vec<u8> {
                 };
 
                 let trimmed_len = trim_trailing_ws(raw, expr_start, expr_end);
+                check_duplicate(diag, &mut scopes, raw, key_start..key_start + key_len as usize);
                 emit_var_func(&mut fields, key_off, key_len, expr_start as u32, trimmed_len as u32);
                 i = expr_end;
             }
 
             _ => {
+                diag.report(ParseErrorKind::ExpectedOperator, key_start..key_start + key_len as usize);
+                // Recover by skipping the rest of this token run so one mistake
+                // yields one diagnostic.
                 i += 1;
+                while i < len && !IS_DELIM_OR_WS[raw[i] as usize] {
+                    i += 1;
+                }
             }
         }
     }
 
+    for span in open_blocks {
+        diag.report(ParseErrorKind::UnclosedBlock, span);
+    }
     fields
 }
 

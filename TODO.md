@@ -11,7 +11,7 @@ The execution plan lives in [`SPRINTS.md`](SPRINTS.md).
 
 - [x] Validate UTF-8 in `Template::from_bytes` / `load` (`resolve_slice` uses `from_utf8_unchecked` over unvalidated bytes → UB on arbitrary input)
 - [x] Make `Template::data` and `Template::fields` private (mutating them breaks the arena invariants the `unsafe` code relies on)
-- [ ] Replace silent parsing with `Result<Template, ParseError>` carrying line/column/span (unclosed quotes, unclosed `|`/`[`, stray `}`, duplicate keys)
+- [x] Replace silent parsing with `Result<Template, ParseError>` carrying line/column/span (unclosed quotes, unclosed `|`/`[`, stray `}`, duplicate keys)
 - [x] Fix `parse_fast_u32` overflow via `wrapping_mul` (`4294967297` → `1`)
 - [x] Fix 8-digit hex (`#RRGGBBAA`): alpha channel is dropped and the last two digits are not validated
 - [x] Serde: `u64`/`i64`/`f64` must not go through `u32`/`f32` (`5000000000` → `705032704`, `-16777217` → `-16777216`, `pi` loses precision)
@@ -20,8 +20,8 @@ The execution plan lives in [`SPRINTS.md`](SPRINTS.md).
 - [x] Lists and enums: splitting on `,` ignores quotes (`["a, b"]` → 3 items); nested lists unsupported although the parser tracks depth
 - [x] Count lines inside multi-line strings and `=` expressions (line numbers drift)
 - [x] `patch_value`: escape/validate the new value (`"a\nevil: 1"` injects a new key) and honour scope (`block.key`) instead of the first global match
-- [ ] `Template::get` / `get_value` without a path return fields from inside blocks as if they were top-level
-- [ ] `from_template` (serde) ignores top-level properties: only blocks are iterated
+- [x] `Template::get` / `get_value` without a path return fields from inside blocks as if they were top-level
+- [x] `from_template` (serde) ignores top-level properties: only blocks are iterated
 - [x] Watcher: callbacks run while holding the global `Mutex` → deadlock if a callback calls `subscribe`/`on_reload`/`check_reload`
 - [x] Watcher: `latest_reloaded` is a single slot shared by every handle of the same file (one handle steals another's update); `Drop` removes the state while other handles are alive
 - [x] Watcher: `Template::load` enables hot-reload by default → should be opt-in
@@ -34,8 +34,8 @@ The execution plan lives in [`SPRINTS.md`](SPRINTS.md).
 ### Phase 1 — Format specification ("JSON" base)
 
 - [ ] Formal `SPEC.md` (EBNF/PEG grammar) with a format version (`@rost 1`)
-- [ ] Explicit value types in the lexer: string, int, float, bool, null, color, dimension, list, map, reference — instead of "everything is `&str` and gets guessed at query time"
-- [ ] Defined string escapes (`\n`, `\t`, `\"`, `\u{...}`) and multi-line / raw strings (`"""` or `r"..."`)
+- [x] Explicit value types in the lexer: string, int, float, bool, null, color, dimension, list, map, reference — instead of "everything is `&str` and gets guessed at query time"
+- [x] Defined string escapes (`\n`, `\t`, `\"`, `\u{...}`) and multi-line / raw strings (`"""` or `r"..."`)
 - [ ] Inline maps/objects (`point { x: 1, y: 2 }` as a value) and lists of objects
 - [ ] Block comments `/* */` and doc-comments `///` preserved in the AST
 - [ ] Lossless bidirectional `rost ⇄ JSON` (and `TOML`/`YAML`) conversion with a conformance suite

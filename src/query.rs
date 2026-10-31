@@ -3,7 +3,7 @@
 //! This module provides facilities to query, search, and iterate over indexed
 //! `.rost` documents with zero heap allocations during traversal.
 
-use super::field::ParsedField;
+use super::field::{ParsedField, QuoteStyle};
 use super::parser::*;
 
 /// An iterator yielding [`ParsedField`] items on-the-fly directly from the
@@ -56,8 +56,13 @@ impl<'a> Iterator for FieldIter<'a> {
                 let name = resolve_slice(self.data, self.bytes, self.idx);
                 let value = resolve_slice(self.data, self.bytes, self.idx + 8);
                 let line = read_u32(self.bytes, self.idx + 16);
+                let quote = QuoteStyle::detect(
+                    self.data,
+                    read_u32(self.bytes, self.idx + 8) as usize,
+                    read_u32(self.bytes, self.idx + 12) as usize,
+                );
                 self.idx += REC_PAIR - 1;
-                Some(ParsedField::CommonText { name, value, line })
+                Some(ParsedField::CommonText { name, value, line, quote })
             }
             TAG_ENUM => {
                 let name = resolve_slice(self.data, self.bytes, self.idx);
@@ -159,6 +164,16 @@ impl<'a> BlockView<'a> {
             .and_then(|f| f.value())
             .map(str::trim)
             .map(|s| s.trim_matches('"'))
+    }
+
+    /// Retrieves a property as a typed [`Scalar`](crate::Scalar).
+    pub fn get_scalar(&self, key: &str) -> Option<crate::Scalar<'a>> {
+        self.get(key).and_then(|f| f.scalar())
+    }
+
+    /// Retrieves a property as a string, decoding escapes in quoted values.
+    pub fn get_string(&self, key: &str) -> Option<std::borrow::Cow<'a, str>> {
+        self.get(key).and_then(|f| f.string_value())
     }
 
     /// Retrieves and parses a property as a 64-bit signed integer.
