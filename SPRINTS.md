@@ -14,7 +14,7 @@ Development plan to turn `rost` into **the ultra-fast JSON and CSS for Rust**.
 ## Working agreement
 
 - Branch `sprints` holds the plan; each sprint lives in its own branch (`sprint1`, `sprint2`, …)
-  created from `sprints` and merged back when done.
+  created from the current tip of `sprints` and merged back when done, so sprints stack.
 - One commit per feature / fix / refactor ("do one thing and do it well"). Every fix ships
   with its regression test in the same commit.
 - `cargo test --all-features` and `cargo clippy --all-features` must pass on every commit.
@@ -64,15 +64,41 @@ model is fixed and covered by a regression test.
 
 **Done when:** malformed input never yields a partially-silent template in strict mode.
 
-> The bytecode format version byte moved to Sprint 5, where the precompiled `.rostc`
+> The bytecode format version byte moved to Sprint 6, where the precompiled `.rostc`
 > format makes it meaningful. Fuzz targets live in `fuzz/` (`cargo +nightly fuzz run parse`);
 > `tests/robustness.rs` is their always-on stable counterpart.
 
-## Sprint 3 — Serde, first class (the drop-in experience)
+## Sprint 3 — Speed first: beat serde_json
+
+**Goal:** `rost` is the fastest way to get data into Rust types. Measure in-repo, remove the
+regressions introduced by the correctness work, and change the architecture where the
+two-pass design (index, then walk) cannot win.
+
+Targets, against `serde_json` on equivalent data on the same machine:
+
+| Workload | Sprint 2 | Target |
+|---|---|---|
+| 5 MB document → typed structs | 1.5× slower | faster than `serde_json` |
+| Small config → struct | 2.3× slower | faster than `serde_json` |
+| Lookup by dot path | O(n), 274 µs mid-document | O(1) after the first query |
+| Strict parse vs lenient | 2.4× | ≤ 1.5× |
+| Lenient indexing | 7.4 ms (regressed) | ≤ develop baseline (5.9 ms) |
+
+- [ ] In-repo reproducible comparison benchmark (`cargo bench --bench compare`) vs `serde_json` and `toml`
+- [ ] Recover the Sprint 1 indexing regression
+- [ ] Strict duplicate-key tracking without per-block hash sets
+- [ ] Lazy path index: O(1) `query_*` after the first lookup
+- [ ] Single-pass serde deserializer straight from text: `rost::from_str` / `from_slice`
+- [ ] Zero-copy borrowed strings (`&'de str`) in the single-pass deserializer
+- [ ] Results table in README
+
+**Done when:** every target in the table is met and reproducible with `cargo bench`.
+
+## Sprint 4 — Serde, first class (the drop-in experience)
 
 **Goal:** switching from `serde_json` is a one-line change. Same mental model, same API shape.
 
-- [ ] `rost::from_str`, `from_slice`, `from_reader` mirroring `serde_json`
+- [ ] `rost::from_reader` and API parity with `serde_json` (`from_str` / `from_slice` land in Sprint 3)
 - [ ] Serializer: `rost::to_string`, `to_string_pretty`, `to_writer`, `to_vec`
 - [ ] Zero-copy borrowing (`&'de str`, `Cow<'de, str>`) straight from the buffer
 - [ ] Enums (unit / newtype / tuple / struct variants), `Option`, `#[serde(default)]`, `flatten`, `rename`
@@ -82,26 +108,26 @@ model is fixed and covered by a regression test.
 
 **Done when:** the `serde_json` examples from its README port to `rost` by renaming the crate.
 
-## Sprint 4 — JSON interop and proven speed
+## Sprint 5 — JSON interop and proven speed
 
 **Goal:** make the speed claim public and reproducible; read JSON too, so adoption is incremental.
 
 - [ ] JSON input mode: parse standard JSON into the same bytecode arena
 - [ ] Lossless `rost ⇄ JSON` conversion (+ `toml`/`yaml` behind features)
 - [ ] Pass the JSONTestSuite conformance cases in JSON mode
-- [ ] `criterion` benches vs `serde_json`, `simd-json`, `sonic-rs`, `toml`, `lightningcss`
-- [ ] Benchmark corpus in-repo (configs, themes, large datasets) + results table in README
+- [ ] Extend the Sprint 3 benchmark to `simd-json`, `sonic-rs`, `lightningcss`
+- [ ] Larger benchmark corpus (real configs, themes, datasets)
 - [ ] Profile-driven parser optimizations (explicit SIMD for structural chars where it wins)
 - [ ] CI job that fails on performance regressions
 
 **Done when:** README shows reproducible numbers where `rost` leads or ties in its target workloads.
 
-## Sprint 5 — Indexed in-memory data structure
+## Sprint 6 — Indexed in-memory data structure
 
 **Goal:** every lookup is O(1) or O(depth), with no rebuilding of views.
 
 - [ ] Block tree encoded in the bytecode (parent / first-child / next-sibling offsets)
-- [ ] Path index (hash table) built during parsing for `query_*` and `find_block`
+- [ ] Path index built during parsing for `find_block` (lazy `query_*` index lands in Sprint 3)
 - [ ] Allocation-free typed iterators for lists, enums and blocks
 - [ ] Key interning for repeated names
 - [ ] Bytecode format version byte for forward compatibility (moved from Sprint 2)
@@ -110,7 +136,7 @@ model is fixed and covered by a regression test.
 
 **Done when:** `find_block` / `query_*` no longer allocate and scale independently of document size.
 
-## Sprint 6 — Rust ergonomics: derive and validation
+## Sprint 7 — Rust ergonomics: derive and validation
 
 **Goal:** describe data once as a Rust struct; get parsing, validation, defaults and docs for free.
 
@@ -122,7 +148,7 @@ model is fixed and covered by a regression test.
 
 **Done when:** a config struct needs only `#[derive(Rost)]` and one `rost::load` call.
 
-## Sprint 7 — CSS core
+## Sprint 8 — CSS core
 
 **Goal:** a real styling language for Rust, not a key-value file with `#` in it.
 
@@ -136,7 +162,7 @@ model is fixed and covered by a regression test.
 
 **Done when:** a complete widget theme (states, tokens, themes) can be expressed and resolved.
 
-## Sprint 8 — CSS for Rust UI frameworks
+## Sprint 9 — CSS for Rust UI frameworks
 
 **Goal:** plug `rost` styles into real Rust UIs with live reload and zero frame drops.
 
@@ -148,7 +174,7 @@ model is fixed and covered by a regression test.
 
 **Done when:** editing a `.rost` theme updates a running Bevy/egui/iced app instantly.
 
-## Sprint 9 — State and transactions
+## Sprint 10 — State and transactions
 
 **Goal:** `rost` as an application state store with safe, atomic, observable changes.
 
@@ -162,7 +188,7 @@ model is fixed and covered by a regression test.
 
 **Done when:** a game or UI can keep all its live state in `rost` with transactional updates.
 
-## Sprint 10 — Declarative programming and API contracts
+## Sprint 11 — Declarative programming and API contracts
 
 **Goal:** declare behaviour and API shapes in `rost`, get type-safe Rust out.
 
@@ -175,7 +201,7 @@ model is fixed and covered by a regression test.
 
 **Done when:** an HTTP API contract is defined in `.rost` and both sides compile against generated types.
 
-## Sprint 11 — Tooling, ecosystem and release
+## Sprint 12 — Tooling, ecosystem and release
 
 **Goal:** frictionless adoption.
 
