@@ -288,6 +288,9 @@ impl Template {
 
     /// Patches an existing property in-place ("maleador").
     ///
+    /// `key` is a bare top-level key (`"volume"`) or a dot path into nested blocks
+    /// (`"audio.volume"`).
+    ///
     /// If the new value length matches the previous value length, replacement occurs
     /// in $O(1)$ directly in the underlying buffer with zero reallocations.
     pub fn patch_value(&mut self, key: &str, new_value: &str) -> bool {
@@ -357,6 +360,16 @@ impl Template {
     ///
     /// Zero heap allocations and blazing fast (under 100 ns).
     pub fn query_raw_value(&self, path: &str) -> Option<&str> {
+        self.locate_property(path)
+            .map(|rec| parser::resolve_slice(&self.data, &self.fields, rec + 9))
+    }
+
+    /// Returns the bytecode index of the property record addressed by `path`.
+    ///
+    /// A bare key (`"volume"`) only matches top-level properties; a dot path
+    /// (`"audio.volume"`, `"car.dimensions.width"`) matches the property inside that
+    /// exact block nesting.
+    pub(crate) fn locate_property(&self, path: &str) -> Option<usize> {
         let clean_path = path.strip_prefix('#').unwrap_or(path);
 
         // Fast-path: single key (no dots)
@@ -369,7 +382,7 @@ impl Template {
                     parser::TAG_COMMON_TEXT => {
                         let key = parser::resolve_slice(&self.data, &self.fields, idx + 1);
                         if key == clean_path && depth == 0 {
-                            return Some(parser::resolve_slice(&self.data, &self.fields, idx + 9));
+                            return Some(idx);
                         }
                         idx += parser::REC_PAIR;
                     }
@@ -429,7 +442,7 @@ impl Template {
                     if stack_depth == block_path.len() && matched_depth == block_path.len() {
                         let key = parser::resolve_slice(&self.data, &self.fields, idx + 1);
                         if key == target_key {
-                            return Some(parser::resolve_slice(&self.data, &self.fields, idx + 9));
+                            return Some(idx);
                         }
                     }
                     idx += parser::REC_PAIR;

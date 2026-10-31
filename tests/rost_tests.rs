@@ -624,3 +624,18 @@ fn test_patch_value_cannot_inject_structure() {
     assert!(t.patch_value("bg", "rgba(1, 2, 3)"));
     assert_eq!(t.as_str(), "bg: rgba(1, 2, 3)\n");
 }
+
+#[test]
+fn test_patch_value_honours_scope() {
+    let src = "volume: 1\n#audio {\n volume: 2\n #music { volume: 3 }\n}\n#video { volume: 4 }\n";
+    let mut t = Template::from_str(src);
+    assert!(t.patch_value("audio.music.volume", "9"));
+    assert!(t.patch_value("video.volume", "0.5"));
+    assert!(t.patch_value("volume", "7"));
+    assert_eq!(t.query_str("volume"), Some("7"));
+    assert_eq!(t.query_str("audio.volume"), Some("2"));
+    assert_eq!(t.query_str("audio.music.volume"), Some("9"));
+    assert_eq!(t.query_str("video.volume"), Some("0.5"));
+    assert!(!t.patch_value("audio.missing", "1"));
+    assert!(!t.patch_value("music.volume", "1"));
+}
