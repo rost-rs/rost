@@ -510,3 +510,13 @@ fn test_diagnostics_block_balance() {
     assert_eq!(diagnostics("@rule {\n"), ["1:2: block is never closed: missing `}`"]);
     assert!(diagnostics("#a { b { c: 1 } }\n@r { x: 2 }\n").is_empty());
 }
+
+#[test]
+fn test_diagnostics_missing_operator() {
+    assert_eq!(
+        diagnostics("a: 1\nwidth 120px\n"),
+        ["2:1: expected `:`, `=`, `|`, `[` or `{` after key"]
+    );
+    assert_eq!(diagnostics("dangling"), ["1:1: expected `:`, `=`, `|`, `[` or `{` after key"]);
+    assert!(diagnostics("a: 1, b = f()\nc | x |\nd [ y ]\ne { }\n#T\n##s \"v\"\n@d v\n").is_empty());
+}

@@ -211,8 +211,10 @@ fn scan<D: Diagnostics>(raw: &[u8], diag: &mut D) -> Vec<u8> {
 
                     emit_directive(&mut fields, name_off, name_len, val_off, val_len, line);
                 } else {
-                    diag.report(ParseErrorKind::UnterminatedString, val_start - 1..line_end(raw, val_start));
-                    i = val_start;
+                    let end = line_end(raw, val_start);
+                    diag.report(ParseErrorKind::UnterminatedString, val_start - 1..end);
+                    // Skip the rest of the line instead of re-reading the string body as keys.
+                    i = end;
                 }
             } else {
                 let val_start = i;
@@ -251,8 +253,10 @@ fn scan<D: Diagnostics>(raw: &[u8], diag: &mut D) -> Vec<u8> {
 
                         emit_subtitle(&mut fields, name_off, name_len, val_off, val_len, line);
                     } else {
-                        diag.report(ParseErrorKind::UnterminatedString, val_start - 1..line_end(raw, val_start));
-                    i = val_start;
+                        let end = line_end(raw, val_start);
+                    diag.report(ParseErrorKind::UnterminatedString, val_start - 1..end);
+                    // Skip the rest of the line instead of re-reading the string body as keys.
+                    i = end;
                     }
                 }
             } else {
@@ -299,6 +303,7 @@ fn scan<D: Diagnostics>(raw: &[u8], diag: &mut D) -> Vec<u8> {
             i += 1;
         }
         if i >= len {
+            diag.report(ParseErrorKind::ExpectedOperator, key_start..key_start + key_len as usize);
             break;
         }
 
@@ -328,8 +333,10 @@ fn scan<D: Diagnostics>(raw: &[u8], diag: &mut D) -> Vec<u8> {
 
                         emit_property(&mut fields, key_off, key_len, val_off, val_len, line);
                     } else {
-                        diag.report(ParseErrorKind::UnterminatedString, val_start - 1..line_end(raw, val_start));
-                    i = val_start;
+                        let end = line_end(raw, val_start);
+                    diag.report(ParseErrorKind::UnterminatedString, val_start - 1..end);
+                    // Skip the rest of the line instead of re-reading the string body as keys.
+                    i = end;
                     }
                 } else {
                     let val_start = i;
@@ -421,7 +428,13 @@ fn scan<D: Diagnostics>(raw: &[u8], diag: &mut D) -> Vec<u8> {
             }
 
             _ => {
+                diag.report(ParseErrorKind::ExpectedOperator, key_start..key_start + key_len as usize);
+                // Recover by skipping the rest of this token run so one mistake
+                // yields one diagnostic.
                 i += 1;
+                while i < len && !IS_DELIM_OR_WS[raw[i] as usize] {
+                    i += 1;
+                }
             }
         }
     }
