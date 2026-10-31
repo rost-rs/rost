@@ -93,6 +93,59 @@ fn find_string_end(body: &[u8]) -> Option<(usize, bool)> {
     Some((end, memchr(b'\\', &body[..end]).is_some()))
 }
 
+// Scanning primitives are pure `(bytes, pos) -> pos` functions. The hot paths thread
+// `pos` through them in a register and store it once: writing `Parser::pos` after every
+// step and reading it back in the next one puts a store-to-load round trip on the
+// critical path of every field.
+
+/// Skips whitespace, newlines, `,` / `;` separators and `//` comments.
+#[inline(always)]
+fn skip_trivia(bytes: &[u8], mut pos: usize) -> usize {
+    while let Some(&b) = bytes.get(pos) {
+        if TRIVIA[b as usize] {
+            pos += 1;
+        } else if b == b'/' && bytes.get(pos + 1) == Some(&b'/') {
+            pos = memchr(b'\n', &bytes[pos..]).map_or(bytes.len(), |p| pos + p);
+        } else {
+            break;
+        }
+    }
+    pos
+}
+
+/// Skips spaces and tabs.
+#[inline(always)]
+fn skip_inline_ws(bytes: &[u8], mut pos: usize) -> usize {
+    while matches!(bytes.get(pos), Some(b' ' | b'\t')) {
+        pos += 1;
+    }
+    pos
+}
+
+/// Returns the end of the key starting at `pos`.
+#[inline(always)]
+fn key_end(bytes: &[u8], mut pos: usize) -> usize {
+    while pos < bytes.len() && !IS_DELIM_OR_WS[bytes[pos] as usize] {
+        pos += 1;
+    }
+    pos
+}
+
+/// Completes a bare token ending at `end` if nothing but trailing whitespace or `;`
+/// separates it from the end of the value. Returns the position after the value,
+/// consuming a following `,` like [`Parser::read_scalar`].
+#[inline(always)]
+fn finish_bare(bytes: &[u8], mut end: usize) -> Option<usize> {
+    while matches!(bytes.get(end), Some(b' ' | b'\t' | b'\r' | b';')) {
+        end += 1;
+    }
+    match bytes.get(end) {
+        None | Some(b'\n' | b'}') => Some(end),
+        Some(b',') => Some(end + 1),
+        _ => None,
+    }
+}
+
 struct Parser<'de> {
     src: &'de str,
     bytes: &'de [u8],
@@ -116,46 +169,14 @@ impl<'de> Parser<'de> {
         self.bytes.get(self.pos).copied()
     }
 
-    // Hot loops work on a local copy of `pos`: through `&mut self` the compiler would
-    // load and store the field on every byte.
-
-    /// Skips whitespace, newlines, `,` / `;` separators and `//` comments.
     #[inline(always)]
     fn skip_trivia(&mut self) {
-        let bytes = self.bytes;
-        let mut pos = self.pos;
-        while let Some(&b) = bytes.get(pos) {
-            if TRIVIA[b as usize] {
-                pos += 1;
-            } else if b == b'/' && bytes.get(pos + 1) == Some(&b'/') {
-                pos = memchr(b'\n', &bytes[pos..]).map_or(bytes.len(), |p| pos + p);
-            } else {
-                break;
-            }
-        }
-        self.pos = pos;
+        self.pos = skip_trivia(self.bytes, self.pos);
     }
 
     #[inline(always)]
     fn skip_inline_ws(&mut self) {
-        let mut pos = self.pos;
-        while matches!(self.bytes.get(pos), Some(b' ' | b'\t')) {
-            pos += 1;
-        }
-        self.pos = pos;
-    }
-
-    /// Takes a key: everything up to the next delimiter or whitespace.
-    #[inline(always)]
-    fn take_key(&mut self) -> &'de str {
-        let bytes = self.bytes;
-        let start = self.pos;
-        let mut pos = start;
-        while pos < bytes.len() && !IS_DELIM_OR_WS[bytes[pos] as usize] {
-            pos += 1;
-        }
-        self.pos = pos;
-        &self.src[start..pos]
+        self.pos = skip_inline_ws(self.bytes, self.pos);
     }
 
     /// Takes a block or directive name: everything up to whitespace, `{` or `:`.
@@ -176,15 +197,16 @@ impl<'de> Parser<'de> {
     /// Reads the value after `key:` and reports how it was quoted.
     #[inline]
     fn read_scalar(&mut self) -> Result<(&'de str, QuoteStyle), DeError> {
-        self.skip_inline_ws();
-        if self.peek() != Some(b'"') {
-            let start = self.pos;
-            let end = find_value_end(self.bytes, start).unwrap_or(self.bytes.len());
-            let len = trim_trailing_ws(self.bytes, start, end);
+        let bytes = self.bytes;
+        let start = skip_inline_ws(bytes, self.pos);
+        if bytes.get(start) != Some(&b'"') {
+            let end = find_value_end(bytes, start).unwrap_or(bytes.len());
+            let len = trim_trailing_ws(bytes, start, end);
             // A ',' belongs to this value; '\n' and '}' are left for the enclosing map.
-            self.pos = if self.bytes.get(end) == Some(&b',') { end + 1 } else { end };
+            self.pos = if bytes.get(end) == Some(&b',') { end + 1 } else { end };
             return Ok((&self.src[start..start + len], QuoteStyle::Bare));
         }
+        self.pos = start;
         if self.bytes[self.pos..].starts_with(RAW_QUOTE) {
             let start = self.pos + RAW_QUOTE.len();
             let Some(len) = memchr::memmem::find(&self.bytes[start..], RAW_QUOTE) else {
@@ -203,30 +225,14 @@ impl<'de> Parser<'de> {
         Ok((&self.src[start..start + len], quote))
     }
 
-    /// Completes a bare token ending at `end` if nothing but trailing whitespace or `;`
-    /// separates it from the end of the value, consuming a following `,` like
-    /// [`Parser::read_scalar`]. Returns `false` (consuming nothing) otherwise.
+    /// Parses a plain integer value in place. Returns the value and its text.
     #[inline(always)]
-    fn finish_bare(&mut self, mut end: usize) -> bool {
-        while matches!(self.bytes.get(end), Some(b' ' | b'\t' | b'\r' | b';')) {
-            end += 1;
-        }
-        match self.bytes.get(end) {
-            None | Some(b'\n' | b'}') => self.pos = end,
-            Some(b',') => self.pos = end + 1,
-            _ => return false,
-        }
-        true
-    }
-
-    /// Parses a plain integer value in place. Returns the value and the end of its digits.
-    #[inline(always)]
-    fn plain_int(&mut self) -> Option<(i64, usize)> {
+    fn plain_int(&mut self) -> Option<(i64, &'de str)> {
         let bytes = self.bytes;
-        let mut i = self.pos;
-        let negative = bytes.get(i) == Some(&b'-');
-        i += usize::from(negative);
-        let digits = i;
+        let start = skip_inline_ws(bytes, self.pos);
+        let negative = bytes.get(start) == Some(&b'-');
+        let digits = start + usize::from(negative);
+        let mut i = digits;
         let mut value: i64 = 0;
         while let Some(&b) = bytes.get(i) {
             let d = b.wrapping_sub(b'0');
@@ -236,10 +242,11 @@ impl<'de> Parser<'de> {
             value = value * 10 + i64::from(d);
             i += 1;
         }
-        if i == digits || bytes.get(i).is_some_and(u8::is_ascii_digit) || !self.finish_bare(i) {
+        if i == digits || bytes.get(i).is_some_and(u8::is_ascii_digit) {
             return None;
         }
-        Some((if negative { -value } else { value }, i))
+        self.pos = finish_bare(bytes, i)?;
+        Some((if negative { -value } else { value }, &self.src[start..i]))
     }
 
     /// Parses a plain decimal value in place (see `parse_fast_f64` for the exactness
@@ -248,9 +255,9 @@ impl<'de> Parser<'de> {
     fn plain_decimal(&mut self) -> Option<f64> {
         const POW10: [f64; 16] = [1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11, 1e12, 1e13, 1e14, 1e15];
         let bytes = self.bytes;
-        let mut i = self.pos;
-        let negative = bytes.get(i) == Some(&b'-');
-        i += usize::from(negative);
+        let start = skip_inline_ws(bytes, self.pos);
+        let negative = bytes.get(start) == Some(&b'-');
+        let mut i = start + usize::from(negative);
         let mut mantissa: u64 = 0;
         let mut count = 0usize;
         let mut fraction: Option<usize> = None;
@@ -265,9 +272,10 @@ impl<'de> Parser<'de> {
             }
             i += 1;
         }
-        if count == 0 || bytes.get(i).is_some_and(|b| b.is_ascii_digit() || *b == b'.') || !self.finish_bare(i) {
+        if count == 0 || bytes.get(i).is_some_and(|b| b.is_ascii_digit() || *b == b'.') {
             return None;
         }
+        self.pos = finish_bare(bytes, i)?;
         let value = mantissa as f64 / POW10[count - fraction.unwrap_or(count)];
         Some(if negative { -value } else { value })
     }
@@ -275,7 +283,17 @@ impl<'de> Parser<'de> {
     /// Consumes `word` (`true`, `false`, `null`) if it is the whole bare value.
     #[inline(always)]
     fn plain_word(&mut self, word: &[u8]) -> bool {
-        self.bytes[self.pos..].starts_with(word) && self.finish_bare(self.pos + word.len())
+        let start = skip_inline_ws(self.bytes, self.pos);
+        if !self.bytes[start..].starts_with(word) {
+            return false;
+        }
+        match finish_bare(self.bytes, start + word.len()) {
+            Some(pos) => {
+                self.pos = pos;
+                true
+            }
+            None => false,
+        }
     }
 
     /// Reads a list body after `[`, up to its matching `]`.
@@ -342,7 +360,46 @@ struct Entries<'a, 'de> {
 
 impl<'de> Entries<'_, 'de> {
     /// Advances to the next entry, returning its key, or `None` at the end of the map.
+    ///
+    /// Inlined fast path for `key: …`, `key { … }`, `key [ … ]`, `key | … |` and `}`;
+    /// everything else goes through [`Entries::next_entry_slow`].
+    #[inline(always)]
     fn next_entry(&mut self) -> Result<Option<&'de str>, DeError> {
+        let bytes = self.p.bytes;
+        let start = skip_trivia(bytes, self.p.pos);
+        match bytes.get(start) {
+            Some(&b) if b != b'#' && b != b'@' && !IS_DELIM_OR_WS[b as usize] => {
+                let end = key_end(bytes, start);
+                let op = skip_inline_ws(bytes, end);
+                let pending = match bytes.get(op) {
+                    Some(b':') => Pending::Scalar,
+                    Some(b'{') => Pending::Block,
+                    Some(b'[') => Pending::List,
+                    Some(b'|') => Pending::Enum,
+                    _ => {
+                        self.p.pos = start;
+                        return self.next_entry_slow();
+                    }
+                };
+                self.p.pos = op + 1;
+                self.pending = Some(pending);
+                Ok(Some(&self.p.src[start..end]))
+            }
+            Some(b'}') if !self.root => {
+                self.p.pos = start + 1;
+                Ok(None)
+            }
+            _ => {
+                self.p.pos = start;
+                self.next_entry_slow()
+            }
+        }
+    }
+
+    /// Handles every entry form, including directives, titles, bindings and errors.
+    #[cold]
+    #[inline(never)]
+    fn next_entry_slow(&mut self) -> Result<Option<&'de str>, DeError> {
         let p = &mut *self.p;
         loop {
             p.skip_trivia();
@@ -392,7 +449,8 @@ impl<'de> Entries<'_, 'de> {
                 }
                 _ => {
                     let start = p.pos;
-                    let key = p.take_key();
+                    p.pos = key_end(p.bytes, start);
+                    let key = &p.src[start..p.pos];
                     if key.is_empty() {
                         return Err(p.error("expected a key"));
                     }
@@ -537,14 +595,11 @@ macro_rules! fused_integers {
     ($($method:ident => $visit:ident: $ty:ty),* $(,)?) => {$(
         #[inline]
         fn $method<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, DeError> {
-            self.p.skip_inline_ws();
-            let start = self.p.pos;
             match self.p.plain_int() {
-                Some((value, end)) => match <$ty>::try_from(value) {
+                Some((value, text)) => match <$ty>::try_from(value) {
                     Ok(v) => visitor.$visit(v),
                     // Out of range: let the shared path produce the usual error.
-                    Err(_) => FieldDeserializer { name: self.key, value: &self.p.src[start..end], quote: QuoteStyle::Bare }
-                        .$method(visitor),
+                    Err(_) => FieldDeserializer { name: self.key, value: text, quote: QuoteStyle::Bare }.$method(visitor),
                 },
                 None => self.text()?.$method(visitor),
             }
@@ -573,7 +628,6 @@ impl<'de> Deserializer<'de> for Scalar<'_, 'de> {
 
     #[inline]
     fn deserialize_f64<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, DeError> {
-        self.p.skip_inline_ws();
         match self.p.plain_decimal() {
             Some(v) => visitor.visit_f64(v),
             None => self.text()?.deserialize_f64(visitor),
@@ -587,7 +641,6 @@ impl<'de> Deserializer<'de> for Scalar<'_, 'de> {
 
     #[inline]
     fn deserialize_bool<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, DeError> {
-        self.p.skip_inline_ws();
         if self.p.plain_word(b"true") {
             return visitor.visit_bool(true);
         }
@@ -609,11 +662,10 @@ impl<'de> Deserializer<'de> for Scalar<'_, 'de> {
 
     #[inline]
     fn deserialize_option<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, DeError> {
-        self.p.skip_inline_ws();
         if self.p.plain_word(b"null") {
             return visitor.visit_none();
         }
-        if self.p.peek() == Some(b'"') {
+        if self.p.bytes.get(skip_inline_ws(self.p.bytes, self.p.pos)) == Some(&b'"') {
             // Quoted values are never `null`; keep the lazy fast paths for the inner value.
             return visitor.visit_some(self);
         }

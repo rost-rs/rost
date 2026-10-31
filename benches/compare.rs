@@ -115,6 +115,10 @@ fn main() {
 
     let big = "Large document → `HashMap<String, Item>`";
     let d = median(9, || {
+        black_box(rost::from_str::<HashMap<String, Item>>(black_box(&rost_src)).unwrap());
+    });
+    row(big, "**rost::from_str** (single pass)", throughput(rost_src.len(), d));
+    let d = median(9, || {
         let t = Template::from_str(black_box(&rost_src));
         black_box(rost::from_template::<HashMap<String, Item>>(&t).unwrap());
     });
@@ -130,6 +134,12 @@ fn main() {
 
     let small = "Small config → struct (per load)";
     const LOADS: usize = 1000;
+    let d = median(15, || {
+        for _ in 0..LOADS {
+            black_box(rost::from_str::<Config>(black_box(ROST_CONFIG)).unwrap());
+        }
+    });
+    row(small, "**rost::from_str** (single pass)", per_op(d, LOADS));
     let d = median(15, || {
         for _ in 0..LOADS {
             let t = Template::from_str(black_box(ROST_CONFIG));
