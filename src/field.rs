@@ -363,10 +363,7 @@ impl<'a> ParsedField<'a> {
             ParsedField::List { raw_items, .. } => raw_items,
             _ => "",
         };
-        raw.split(',')
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(|s| s.trim_matches('"'))
+        TopLevelSplit::new(raw, |b| b == b',').map(unquote)
     }
 
     /// Returns the n-th item (0-indexed) if this field is a [`ParsedField::List`].
@@ -385,13 +382,79 @@ impl<'a> ParsedField<'a> {
             ParsedField::Enum { raw_variants, .. } => raw_variants,
             _ => "",
         };
-        raw.split([',', '|', '\n'])
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
+        TopLevelSplit::new(raw, |b| matches!(b, b',' | b'|' | b'\n'))
     }
 
     /// Returns the n-th variant (0-indexed) if this field is a [`ParsedField::Enum`].
     pub fn enum_variant(&self, index: usize) -> Option<&'a str> {
         self.iterate_enum().nth(index)
+    }
+}
+
+/// Removes one pair of surrounding double quotes, if present.
+#[inline]
+pub(crate) fn unquote(s: &str) -> &str {
+    if s.len() >= 2 && s.starts_with('"') && s.ends_with('"') {
+        &s[1..s.len() - 1]
+    } else {
+        s
+    }
+}
+
+/// Zero-allocation iterator splitting list/enum bodies on separator bytes that are not
+/// nested inside quotes, `(...)`, `[...]` or `{...}`. Items are trimmed and empty items
+/// are skipped.
+#[derive(Debug, Clone)]
+pub(crate) struct TopLevelSplit<'a> {
+    rest: &'a str,
+    is_sep: fn(u8) -> bool,
+}
+
+impl<'a> TopLevelSplit<'a> {
+    pub(crate) fn new(raw: &'a str, is_sep: fn(u8) -> bool) -> Self {
+        Self { rest: raw, is_sep }
+    }
+}
+
+impl<'a> Iterator for TopLevelSplit<'a> {
+    type Item = &'a str;
+
+    fn next(&mut self) -> Option<&'a str> {
+        while !self.rest.is_empty() {
+            let bytes = self.rest.as_bytes();
+            let mut depth: u32 = 0;
+            let mut in_quote = false;
+            let mut end = bytes.len();
+            let mut i = 0;
+            while i < bytes.len() {
+                let b = bytes[i];
+                if in_quote {
+                    match b {
+                        b'\\' => i += 1,
+                        b'"' => in_quote = false,
+                        _ => {}
+                    }
+                } else {
+                    match b {
+                        b'"' => in_quote = true,
+                        b'(' | b'[' | b'{' => depth += 1,
+                        b')' | b']' | b'}' => depth = depth.saturating_sub(1),
+                        _ if depth == 0 && (self.is_sep)(b) => {
+                            end = i;
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+                i += 1;
+            }
+            // Separators are ASCII, so `end` and `end + 1` are char boundaries.
+            let item = self.rest[..end].trim();
+            self.rest = if end < bytes.len() { &self.rest[end + 1..] } else { "" };
+            if !item.is_empty() {
+                return Some(item);
+            }
+        }
+        None
     }
 }

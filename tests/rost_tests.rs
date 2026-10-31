@@ -577,3 +577,13 @@ fn test_unquoted_values_keep_nested_commas() {
     let t = Template::from_str("a: f(1, 2\nb: 2\n");
     assert_eq!(t.get_value("b"), Some("2"));
 }
+
+#[test]
+fn test_list_and_enum_splitting_respects_quotes_and_nesting() {
+    let t = Template::from_str(
+        "tags [\"a, b\", \"c\", rgba(1, 2, 3), [x, y]]\nmode | \"a, b\", idle |\n",
+    );
+    assert_eq!(t.query_list("tags"), Some(vec!["a, b", "c", "rgba(1, 2, 3)", "[x, y]"]));
+    assert_eq!(t.query_list_item("tags", 2), Some("rgba(1, 2, 3)"));
+    assert_eq!(t.query_enum("mode"), Some(vec!["\"a, b\"", "idle"]));
+}

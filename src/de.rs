@@ -35,7 +35,7 @@ impl de::Error for DeError {
 fn strip_hash(s: &str) -> &str {
     s.strip_prefix('#').unwrap_or(s)
 }
-use super::field::{parse_fast_f32, parse_fast_f64, parse_fast_u32};
+use super::field::{parse_fast_f32, parse_fast_f64, parse_fast_u32, unquote, TopLevelSplit};
 
 /// Parses an integer literal of any width without narrowing through `u32`/`f32`.
 ///
@@ -180,7 +180,7 @@ impl<'de, 'a> Deserializer<'de> for RawListDeserializer<'a> {
     #[inline]
     fn deserialize_seq<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
         let clean = self.raw.trim().trim_start_matches('[').trim_end_matches(']');
-        let items: Vec<&'a str> = clean.split(',').map(str::trim).filter(|s| !s.is_empty()).collect();
+        let items: Vec<&'a str> = TopLevelSplit::new(clean, |b| b == b',').collect();
         visitor.visit_seq(RawSeqAccess { items, idx: 0 })
     }
 
@@ -203,7 +203,7 @@ impl<'de, 'a> SeqAccess<'de> for RawSeqAccess<'a> {
         if self.idx >= self.items.len() {
             return Ok(None);
         }
-        let item = self.items[self.idx].trim_matches('"');
+        let item = unquote(self.items[self.idx]);
         self.idx += 1;
         seed.deserialize(item.into_deserializer()).map(Some)
     }
