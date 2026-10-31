@@ -427,7 +427,15 @@ fn scan<D: Diagnostics>(raw: &[u8], diag: &mut D) -> Vec<u8> {
         let key_len = (i - key_start) as u32;
 
         if key_len == 0 {
-            i += 1;
+            // A delimiter (`:`, `=`, `|`, `[`, `{`) where a key should start.
+            diag.report(ParseErrorKind::ExpectedKey, i..i + 1);
+            // `: value` / `= expr` is a property missing its key: skip the value too, so one
+            // mistake yields one diagnostic.
+            i = match raw[i] {
+                b':' => find_value_end(raw, i + 1).unwrap_or(len),
+                b'=' => memchr2(b'\n', b'}', &raw[i..]).map_or(len, |p| i + p),
+                _ => i + 1,
+            };
             continue;
         }
 

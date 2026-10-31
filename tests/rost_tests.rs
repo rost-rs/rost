@@ -759,6 +759,14 @@ fn test_diagnostics_missing_operator() {
 }
 
 #[test]
+fn test_diagnostics_stray_delimiter() {
+    assert_eq!(diagnostics(": 1\n"), ["1:1: expected a key"]);
+    assert_eq!(diagnostics("a: 1\n  = f()\n"), ["2:3: expected a key"]);
+    // Lenient parsing still skips it and keeps the rest.
+    assert_eq!(Template::parse_lenient(": x\nb: 2\n").query_i64("b"), Some(2));
+}
+
+#[test]
 fn test_diagnostics_duplicate_keys() {
     assert_eq!(diagnostics("a: 1\nb: 2\na: 3\n"), ["3:1: duplicate key `a` in the same scope"]);
     assert_eq!(
