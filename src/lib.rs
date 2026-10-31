@@ -274,9 +274,23 @@ impl Template {
         self.iter().collect()
     }
 
-    /// Retrieves the first field matching the provided key or identifier.
+    /// Retrieves the first top-level field matching the provided key or identifier.
+    ///
+    /// Fields nested inside blocks are not visible here; address them with a dot path
+    /// through [`Template::query_field`] (e.g. `"button.width"`).
     pub fn get(&self, key: &str) -> Option<ParsedField<'_>> {
-        self.iter().find(|f| f.name() == key)
+        let mut depth: usize = 0;
+        for field in self.iter() {
+            if depth == 0 && field.name() == key {
+                return Some(field);
+            }
+            match field {
+                ParsedField::BlockStart { .. } => depth += 1,
+                ParsedField::BlockEnd { .. } => depth = depth.saturating_sub(1),
+                _ => {}
+            }
+        }
+        None
     }
 
     /// Retrieves the string value of the first property matching `key`.

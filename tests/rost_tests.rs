@@ -617,3 +617,14 @@ fn test_scalar_classification() {
     assert_eq!(s("w").type_name(), "string");
     assert_eq!(t.query_scalar("missing"), None);
 }
+
+#[test]
+fn test_top_level_get_does_not_see_nested_fields() {
+    let t = Template::parse("#a { x: 1 }\n#b { x: 2 }\ny: 3\n").unwrap();
+    assert_eq!(t.get_value("x"), None);
+    assert_eq!(t.get_value("y"), Some("3"));
+    assert_eq!(t.query_i64("a.x"), Some(1));
+    assert_eq!(t.query_i64("b.x"), Some(2));
+    let t = Template::parse("#a { x: 1 }\nx: 9\n").unwrap();
+    assert_eq!(t.get_value("x"), Some("9"));
+}
