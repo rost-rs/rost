@@ -5,6 +5,7 @@
 //! binary offset arena (`Vec<u8>`) at sustained throughputs exceeding 500 MB/s.
 
 use memchr::{memchr, memchr2, memchr3};
+use std::collections::HashSet;
 use std::ops::Range;
 
 use crate::error::{ParseError, ParseErrorKind};
@@ -124,6 +125,25 @@ impl Diagnostics for Vec<(ParseErrorKind, Range<usize>)> {
     }
 }
 
+/// Records `key` in the innermost scope and reports it if it was already defined there.
+#[inline(always)]
+fn check_duplicate<'r, D: Diagnostics>(
+    diag: &mut D,
+    scopes: &mut [HashSet<&'r [u8]>],
+    raw: &'r [u8],
+    key: Range<usize>,
+) {
+    if !D::ENABLED {
+        return;
+    }
+    if let Some(scope) = scopes.last_mut()
+        && !scope.insert(&raw[key.clone()])
+    {
+        let name = String::from_utf8_lossy(&raw[key.clone()]).into_owned();
+        diag.report(ParseErrorKind::DuplicateKey(name), key);
+    }
+}
+
 /// Returns the position of the next `\n` at or after `from`, or the end of the buffer.
 #[inline]
 fn line_end(raw: &[u8], from: usize) -> usize {
@@ -140,6 +160,8 @@ fn scan<D: Diagnostics>(raw: &[u8], diag: &mut D) -> Vec<u8> {
 
     // Name spans of currently open blocks; only tracked when diagnostics are enabled.
     let mut open_blocks: Vec<Range<usize>> = Vec::new();
+    // Keys defined in each open scope (root first); only tracked when diagnostics are enabled.
+    let mut scopes: Vec<HashSet<&[u8]>> = if D::ENABLED { vec![HashSet::new()] } else { Vec::new() };
 
     'scan: while i < len {
         // 1. Vectorized / LUT whitespace skip and newline tracker
@@ -170,8 +192,12 @@ fn scan<D: Diagnostics>(raw: &[u8], diag: &mut D) -> Vec<u8> {
 
         // 3. Block closing delimiter '}'
         if raw[i] == b'}' {
-            if D::ENABLED && open_blocks.pop().is_none() {
-                diag.report(ParseErrorKind::UnexpectedCloseBrace, i..i + 1);
+            if D::ENABLED {
+                if open_blocks.pop().is_some() {
+                    scopes.pop();
+                } else {
+                    diag.report(ParseErrorKind::UnexpectedCloseBrace, i..i + 1);
+                }
             }
             emit_block_end(&mut fields, line);
             i += 1;
@@ -196,6 +222,7 @@ fn scan<D: Diagnostics>(raw: &[u8], diag: &mut D) -> Vec<u8> {
             if i < len && raw[i] == b'{' {
                 if D::ENABLED {
                     open_blocks.push(start_name..start_name + name_len as usize);
+                    scopes.push(HashSet::new());
                 }
                 emit_block_start(&mut fields, name_off, name_len, line);
                 i += 1;
@@ -269,6 +296,7 @@ fn scan<D: Diagnostics>(raw: &[u8], diag: &mut D) -> Vec<u8> {
                 if probe < len && raw[probe] == b'{' {
                     if D::ENABLED {
                         open_blocks.push(start_name..start_name + name_len as usize);
+                        scopes.push(HashSet::new());
                     }
                     emit_block_start(&mut fields, name_off, name_len, line);
                     i = probe + 1;
@@ -312,6 +340,7 @@ fn scan<D: Diagnostics>(raw: &[u8], diag: &mut D) -> Vec<u8> {
             b'{' => {
                 if D::ENABLED {
                     open_blocks.push(key_start..key_start + key_len as usize);
+                    scopes.push(HashSet::new());
                 }
                 emit_block_start(&mut fields, key_off, key_len, line);
                 i += 1;
@@ -331,6 +360,7 @@ fn scan<D: Diagnostics>(raw: &[u8], diag: &mut D) -> Vec<u8> {
                         let val_len = quote_end as u32;
                         i = val_start + quote_end + 1;
 
+                        check_duplicate(diag, &mut scopes, raw, key_start..key_start + key_len as usize);
                         emit_property(&mut fields, key_off, key_len, val_off, val_len, line);
                     } else {
                         let end = line_end(raw, val_start);
@@ -357,6 +387,7 @@ fn scan<D: Diagnostics>(raw: &[u8], diag: &mut D) -> Vec<u8> {
                     };
 
                     let trimmed_len = trim_trailing_ws(raw, val_start, val_end);
+                    check_duplicate(diag, &mut scopes, raw, key_start..key_start + key_len as usize);
                     emit_property(&mut fields, key_off, key_len, val_start as u32, trimmed_len as u32, line);
                     i = next_i;
                 }
@@ -376,6 +407,7 @@ fn scan<D: Diagnostics>(raw: &[u8], diag: &mut D) -> Vec<u8> {
                     i = body_start + end_bar + 1;
                     let end_line = line;
 
+                    check_duplicate(diag, &mut scopes, raw, key_start..key_start + key_len as usize);
                     emit_enum(&mut fields, key_off, key_len, body_off, body_len, start_line, end_line);
                 } else {
                     diag.report(ParseErrorKind::UnterminatedEnum, body_start - 1..line_end(raw, body_start));
@@ -406,6 +438,7 @@ fn scan<D: Diagnostics>(raw: &[u8], diag: &mut D) -> Vec<u8> {
                 let body_len = (body_end - body_start) as u32;
                 let end_line = line;
 
+                check_duplicate(diag, &mut scopes, raw, key_start..key_start + key_len as usize);
                 emit_list(&mut fields, key_off, key_len, body_off, body_len, start_line, end_line);
             }
 
@@ -423,6 +456,7 @@ fn scan<D: Diagnostics>(raw: &[u8], diag: &mut D) -> Vec<u8> {
                 };
 
                 let trimmed_len = trim_trailing_ws(raw, expr_start, expr_end);
+                check_duplicate(diag, &mut scopes, raw, key_start..key_start + key_len as usize);
                 emit_var_func(&mut fields, key_off, key_len, expr_start as u32, trimmed_len as u32);
                 i = expr_end;
             }

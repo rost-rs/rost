@@ -520,3 +520,14 @@ fn test_diagnostics_missing_operator() {
     assert_eq!(diagnostics("dangling"), ["1:1: expected `:`, `=`, `|`, `[` or `{` after key"]);
     assert!(diagnostics("a: 1, b = f()\nc | x |\nd [ y ]\ne { }\n#T\n##s \"v\"\n@d v\n").is_empty());
 }
+
+#[test]
+fn test_diagnostics_duplicate_keys() {
+    assert_eq!(diagnostics("a: 1\nb: 2\na: 3\n"), ["3:1: duplicate key `a` in the same scope"]);
+    assert_eq!(
+        diagnostics("#btn {\n w: 1\n state | a |\n state [ b ]\n}\n"),
+        ["4:2: duplicate key `state` in the same scope"]
+    );
+    // Same key in different scopes, or after a scope closes, is fine.
+    assert!(diagnostics("w: 1\n#a { w: 2 }\n#b { w: 3, inner { w: 4 } }\n").is_empty());
+}
