@@ -128,20 +128,19 @@ pub fn parse_fast_u32(raw: &str) -> Option<u32> {
 
     if slice[0] == b'#' {
         return parse_hex_digits(&slice[1..]);
-    } else if slice.len() > 2 && slice[0] == b'0' && (slice[1] == b'x' || slice[1] == b'X') {
-        return parse_hex_digits(&slice[2..]);
-    } else {
-        let mut val = 0u32;
-        for &b in slice {
-            if b.is_ascii_digit() {
-                val = val.checked_mul(10)?.checked_add((b - b'0') as u32)?;
-            } else {
-                return std::str::from_utf8(slice).ok()?.parse::<u32>().ok();
-            }
-        }
-        return Some(val);
     }
-    None
+    if slice.len() > 2 && slice[0] == b'0' && (slice[1] == b'x' || slice[1] == b'X') {
+        return parse_hex_digits(&slice[2..]);
+    }
+    let mut val = 0u32;
+    for &b in slice {
+        if b.is_ascii_digit() {
+            val = val.checked_mul(10)?.checked_add((b - b'0') as u32)?;
+        } else {
+            return std::str::from_utf8(slice).ok()?.parse::<u32>().ok();
+        }
+    }
+    Some(val)
 }
 
 /// Strips surrounding whitespace, trailing `;`, and unit suffixes (`px`, `%`, …) from a
