@@ -159,8 +159,8 @@ pub fn parse_fast_u32(raw: &str) -> Option<u32> {
     } else {
         let mut val = 0u32;
         for &b in slice {
-            if b >= b'0' && b <= b'9' {
-                val = val.wrapping_mul(10).wrapping_add((b - b'0') as u32);
+            if b.is_ascii_digit() {
+                val = val.checked_mul(10)?.checked_add((b - b'0') as u32)?;
             } else {
                 return std::str::from_utf8(slice).ok()?.parse::<u32>().ok();
             }

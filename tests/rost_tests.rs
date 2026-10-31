@@ -489,3 +489,12 @@ fn test_load_rejects_invalid_utf8() {
     assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
     let _ = std::fs::remove_file(&path);
 }
+
+#[test]
+fn test_u32_overflow_is_rejected() {
+    assert_eq!(rost::field::parse_fast_u32("4294967295"), Some(u32::MAX));
+    assert_eq!(rost::field::parse_fast_u32("4294967296"), None);
+    assert_eq!(rost::field::parse_fast_u32("4294967297"), None);
+    let t = Template::from_str("n: 4294967297\n");
+    assert_eq!(t.query_hex("n"), None);
+}
