@@ -222,7 +222,7 @@ fn test_hot_reloading_watcher() {
 
     fs::write(&temp_file, "#window { width: 500px }").unwrap();
 
-    let mut template = Template::load(&temp_file).expect("load with hot reload");
+    let mut template = Template::load_watched(&temp_file).expect("load with hot reload");
     assert!(template.is_hot_reload_enabled());
     assert_eq!(template.query_dim("window.width"), Some(500.0));
 
@@ -307,8 +307,8 @@ fn test_multi_file_scaling_central_watcher() {
     fs::write(&file1, "#car { mass: 1200kg }").unwrap();
     fs::write(&file2, "#arena { gravity: 9.8 }").unwrap();
 
-    let t1 = Template::load(&file1).expect("load file1");
-    let t2 = Template::load(&file2).expect("load file2");
+    let t1 = Template::load_watched(&file1).expect("load file1");
+    let t2 = Template::load_watched(&file2).expect("load file2");
 
     let rx1 = t1.subscribe().expect("rx1");
     let rx2 = t2.subscribe().expect("rx2");
@@ -698,5 +698,15 @@ fn test_watcher_handles_do_not_steal_reloads() {
     assert!(got_a && got_b, "both handles must observe the reload");
     assert_eq!(a.query_i64("v"), Some(2));
     assert_eq!(b.query_i64("v"), Some(2));
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn test_hot_reload_is_opt_in() {
+    let path = std::env::temp_dir().join(format!("rost_opt_in_{}.rost", std::process::id()));
+    std::fs::write(&path, "v: 1\n").unwrap();
+    assert!(!Template::load(&path).unwrap().is_hot_reload_enabled());
+    assert!(!Template::from_file(&path).unwrap().is_hot_reload_enabled());
+    assert!(Template::load_watched(&path).unwrap().is_hot_reload_enabled());
     let _ = std::fs::remove_file(&path);
 }

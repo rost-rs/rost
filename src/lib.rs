@@ -140,8 +140,15 @@ impl Template {
         }
     }
 
-    /// Loads a `.rost` document from disk with hot-reloading enabled by default (`hot_reload = true`).
+    /// Loads a `.rost` document from disk without hot-reloading.
+    ///
+    /// Use [`Template::load_watched`] to opt into hot-reloading.
     pub fn load<P: AsRef<Path>>(path: P) -> std::io::Result<Self> {
+        Self::load_with_options(path, false)
+    }
+
+    /// Loads a `.rost` document from disk and registers it with the shared hot-reload watcher.
+    pub fn load_watched<P: AsRef<Path>>(path: P) -> std::io::Result<Self> {
         Self::load_with_options(path, true)
     }
 
@@ -163,7 +170,7 @@ impl Template {
         })
     }
 
-    /// Loads and parses a `.rost` document from disk (with hot-reloading enabled by default).
+    /// Loads and parses a `.rost` document from disk (without hot-reloading).
     pub fn from_file<P: AsRef<Path>>(path: P) -> std::io::Result<Self> {
         Self::load(path)
     }
