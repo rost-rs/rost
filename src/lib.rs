@@ -115,10 +115,10 @@ use std::sync::Arc;
 pub struct Template {
     /// File path origin of the template, if loaded from filesystem.
     pub path: PathBuf,
-    /// Raw unparsed byte content of the document.
-    pub data: Vec<u8>,
+    /// Raw unparsed byte content of the document. Always valid UTF-8.
+    pub(crate) data: Vec<u8>,
     /// Compact bytecode array storing tags and Little-Endian `u32` offsets into `data`.
-    pub fields: Vec<u8>,
+    pub(crate) fields: Vec<u8>,
     /// Native zero-CPU filesystem watcher if hot-reloading was enabled.
     pub(crate) watcher: Option<Arc<HotReloadWatcher>>,
 }
@@ -292,6 +292,18 @@ impl Template {
     /// in $O(1)$ directly in the underlying buffer with zero reallocations.
     pub fn patch_value(&mut self, key: &str, new_value: &str) -> bool {
         MalleablePatcher::patch_property(self, key, new_value)
+    }
+
+    /// Returns the raw content of the document as bytes (always valid UTF-8).
+    #[inline]
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.data
+    }
+
+    /// Returns the compact bytecode index produced by [`parser::parse_into_bytecode`].
+    #[inline]
+    pub fn bytecode(&self) -> &[u8] {
+        &self.fields
     }
 
     /// Returns the raw content of the document as a UTF-8 string slice.
