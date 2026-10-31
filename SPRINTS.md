@@ -27,24 +27,24 @@ Development plan to turn `rost` into **the ultra-fast JSON and CSS for Rust**.
 **Goal:** nobody adopts a "fast" format that silently corrupts data. Close every soundness
 hole and every silent data-loss bug found in the audit, without changing the format.
 
-- [ ] Centralize bytecode record sizes in named constants (single source of truth)
-- [ ] Validate UTF-8 when building a `Template` (no UB on arbitrary bytes)
-- [ ] Make raw slice resolvers crate-private (no safe public API over `from_utf8_unchecked`)
-- [ ] Make `Template::data` / `Template::fields` private behind read-only accessors
-- [ ] Reject decimal `u32` overflow instead of wrapping
-- [ ] Preserve the alpha channel of `#RRGGBBAA` / `0xRRGGBBAA` colors
-- [ ] Correctly rounded float parsing and a native `f64` path
-- [ ] Serde: full-width integers (`u64`/`i64`/`i8`…`u16`) and `f64` without narrowing
-- [ ] Unquoted values keep commas nested inside `()` / `[]` (`rgba(1, 2, 3)`)
-- [ ] Quote- and bracket-aware list/enum item splitting (`["a, b"]`)
-- [ ] Accurate line numbers across multi-line quoted strings
-- [ ] `patch_value` quotes values that would otherwise alter document structure
-- [ ] `patch_value` supports scoped dot paths (`block.key`)
-- [ ] Watcher: run callbacks/broadcasts outside the global lock (no deadlock)
-- [ ] Watcher: per-handle reload slots and handle ref-counting on `Drop`
-- [ ] Hot-reload is opt-in (`Template::load` no longer spawns a watcher)
-- [ ] Remove `Template::dump` (silently swallows IO errors) and the `utilrs_rost` alias
-- [ ] Zero clippy warnings
+- [x] Centralize bytecode record sizes in named constants (single source of truth)
+- [x] Validate UTF-8 when building a `Template` (no UB on arbitrary bytes)
+- [x] Make raw slice resolvers crate-private (no safe public API over `from_utf8_unchecked`)
+- [x] Make `Template::data` / `Template::fields` private behind read-only accessors
+- [x] Reject decimal `u32` overflow instead of wrapping
+- [x] Preserve the alpha channel of `#RRGGBBAA` / `0xRRGGBBAA` colors
+- [x] Correctly rounded float parsing and a native `f64` path
+- [x] Serde: full-width integers (`u64`/`i64`/`i8`…`u16`) and `f64` without narrowing
+- [x] Unquoted values keep commas nested inside `()` / `[]` (`rgba(1, 2, 3)`)
+- [x] Quote- and bracket-aware list/enum item splitting (`["a, b"]`)
+- [x] Accurate line numbers across multi-line quoted strings
+- [x] `patch_value` quotes values that would otherwise alter document structure
+- [x] `patch_value` supports scoped dot paths (`block.key`)
+- [x] Watcher: run callbacks/broadcasts outside the global lock (no deadlock)
+- [x] Watcher: per-handle reload slots and handle ref-counting on `Drop`
+- [x] Hot-reload is opt-in (`Template::load` no longer spawns a watcher)
+- [x] Remove `Template::dump` (silently swallows IO errors) and the `utilrs_rost` alias
+- [x] Zero clippy warnings
 
 **Done when:** every bug listed in `TODO.md` Phase 0 that does not require a new error
 model is fixed and covered by a regression test.

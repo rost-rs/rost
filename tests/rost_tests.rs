@@ -134,7 +134,7 @@ fn test_high_throughput_speed() {
     let size_mb = bytes.len() as f64 / (1024.0 * 1024.0);
 
     let start = Instant::now();
-    let template = Template::from_bytes(bytes.to_vec());
+    let template = Template::from_bytes(bytes.to_vec()).expect("valid utf-8");
     let elapsed = start.elapsed();
 
     let fields_count = template.iter().count();
@@ -222,7 +222,7 @@ fn test_hot_reloading_watcher() {
 
     fs::write(&temp_file, "#window { width: 500px }").unwrap();
 
-    let mut template = Template::load(&temp_file).expect("load with hot reload");
+    let mut template = Template::load_watched(&temp_file).expect("load with hot reload");
     assert!(template.is_hot_reload_enabled());
     assert_eq!(template.query_dim("window.width"), Some(500.0));
 
@@ -307,8 +307,8 @@ fn test_multi_file_scaling_central_watcher() {
     fs::write(&file1, "#car { mass: 1200kg }").unwrap();
     fs::write(&file2, "#arena { gravity: 9.8 }").unwrap();
 
-    let t1 = Template::load(&file1).expect("load file1");
-    let t2 = Template::load(&file2).expect("load file2");
+    let t1 = Template::load_watched(&file1).expect("load file1");
+    let t2 = Template::load_watched(&file2).expect("load file2");
 
     let rx1 = t1.subscribe().expect("rx1");
     let rx2 = t2.subscribe().expect("rx2");
@@ -473,3 +473,240 @@ fn test_serde_deserialization() {
 }
 
 
+
+#[test]
+fn test_from_bytes_rejects_invalid_utf8() {
+    assert!(Template::from_bytes(vec![b'k', b':', b' ', 0xff, 0xfe, b'\n']).is_err());
+    let t = Template::from_bytes(b"k: v\n".to_vec()).expect("valid utf-8");
+    assert_eq!(t.get_value("k"), Some("v"));
+}
+
+#[test]
+fn test_load_rejects_invalid_utf8() {
+    let path = std::env::temp_dir().join(format!("rost_invalid_utf8_{}.rost", std::process::id()));
+    std::fs::write(&path, [b'k', b':', b' ', 0xff, b'\n']).unwrap();
+    let err = Template::load_with_options(&path, false).expect_err("invalid utf-8 must fail");
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn test_u32_overflow_is_rejected() {
+    assert_eq!(rost::field::parse_fast_u32("4294967295"), Some(u32::MAX));
+    assert_eq!(rost::field::parse_fast_u32("4294967296"), None);
+    assert_eq!(rost::field::parse_fast_u32("4294967297"), None);
+    let t = Template::from_str("n: 4294967297\n");
+    assert_eq!(t.query_hex("n"), None);
+}
+
+#[test]
+fn test_hex_colors_keep_alpha_channel() {
+    let t = Template::from_str("#c {\n rgba: #11223344\n short: #f00a\n rgb: #1e1e2e\n hex: 0xAABBCCDD\n bad: #1122334g\n}\n");
+    assert_eq!(t.query_hex("c.rgba"), Some(0x11223344));
+    assert_eq!(t.query_hex("c.short"), Some(0xff0000aa));
+    assert_eq!(t.query_hex("c.rgb"), Some(0x1e1e2e));
+    assert_eq!(t.query_hex("c.hex"), Some(0xaabbccdd));
+    assert_eq!(t.query_hex("c.bad"), None);
+    let obj = t.to_obj("c").expect("block c");
+    assert_eq!(obj.hex("rgba"), Some(0x11223344));
+    assert_eq!(obj.hex("bad"), None);
+}
+
+#[test]
+fn test_float_parsing_is_correctly_rounded() {
+    use rost::field::{parse_fast_f32, parse_fast_f64};
+    assert_eq!(parse_fast_f64("0.1"), Some(0.1));
+    assert_eq!(parse_fast_f64("0.3"), Some(0.3));
+    assert_eq!(parse_fast_f64("2.2250738585072014e-308"), Some(2.2250738585072014e-308));
+    assert_eq!(parse_fast_f64("-16777217"), Some(-16777217.0));
+    assert_eq!(parse_fast_f32("0.1"), Some(0.1f32));
+    assert_eq!(parse_fast_f32("1.5rem"), Some(1.5));
+    assert_eq!(parse_fast_f32("75%"), Some(75.0));
+    assert_eq!(parse_fast_f32("abc"), None);
+    assert_eq!(parse_fast_f32(""), None);
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn test_serde_numbers_are_not_narrowed() {
+    use serde::Deserialize;
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct Numbers {
+        big: u64,
+        neg: i64,
+        pi: f64,
+        small: i8,
+        color: u32,
+    }
+
+    let tmpl = Template::from_str(
+        "#n {\n big: 5000000000\n neg: -16777217\n pi: 3.141592653589793\n small: -12\n color: #ff0000\n}\n",
+    );
+    let n: Numbers = tmpl.deserialize("n").expect("deserialize numbers");
+    assert_eq!(
+        n,
+        Numbers { big: 5_000_000_000, neg: -16_777_217, pi: std::f64::consts::PI, small: -12, color: 0xff0000 }
+    );
+
+    #[derive(Debug, Deserialize)]
+    #[allow(dead_code)]
+    struct Tiny {
+        v: u8,
+    }
+    let tmpl = Template::from_str("#t { v: 300 }");
+    assert!(tmpl.deserialize::<Tiny>("t").is_err());
+    let tmpl = Template::from_str("#t { v: 1.5 }");
+    assert!(tmpl.deserialize::<Tiny>("t").is_err());
+    let tmpl = Template::from_str("#t { v: 0xff }");
+    assert_eq!(tmpl.deserialize::<Tiny>("t").expect("hex u8").v, 0xff);
+}
+
+#[test]
+fn test_unquoted_values_keep_nested_commas() {
+    let t = Template::from_str(
+        "color: rgba(1, 2, 3)\nshadow: drop(0 1px, [a, b]), next: 1\nfont: url(\"a,b\")\n#btn { bg: hsl(10, 20%, 30%), w: 4px }\n",
+    );
+    assert_eq!(t.get_value("color"), Some("rgba(1, 2, 3)"));
+    assert_eq!(t.get_value("shadow"), Some("drop(0 1px, [a, b])"));
+    assert_eq!(t.get_value("next"), Some("1"));
+    assert_eq!(t.get_value("font"), Some("url(\"a,b\")"));
+    assert_eq!(t.query_str("btn.bg"), Some("hsl(10, 20%, 30%)"));
+    assert_eq!(t.query_str("btn.w"), Some("4px"));
+    // An unbalanced parenthesis must not swallow the following lines.
+    let t = Template::from_str("a: f(1, 2\nb: 2\n");
+    assert_eq!(t.get_value("b"), Some("2"));
+}
+
+#[test]
+fn test_list_and_enum_splitting_respects_quotes_and_nesting() {
+    let t = Template::from_str(
+        "tags [\"a, b\", \"c\", rgba(1, 2, 3), [x, y]]\nmode | \"a, b\", idle |\n",
+    );
+    assert_eq!(t.query_list("tags"), Some(vec!["a, b", "c", "rgba(1, 2, 3)", "[x, y]"]));
+    assert_eq!(t.query_list_item("tags", 2), Some("rgba(1, 2, 3)"));
+    assert_eq!(t.query_enum("mode"), Some(vec!["\"a, b\"", "idle"]));
+}
+
+#[test]
+fn test_line_numbers_survive_multiline_strings() {
+    let t = Template::from_str(
+        "a: \"one\ntwo\"\n@doc \"x\ny\"\n##sub\n\"p\nq\"\nb: 1\n",
+    );
+    assert_eq!(t.get("a").unwrap().line(), 1);
+    assert_eq!(t.get("doc").unwrap().line(), 3);
+    assert_eq!(t.get("sub").unwrap().line(), 6);
+    assert_eq!(t.get("b").unwrap().line(), 8);
+
+    let t = Template::from_str("x: 1\ny: 2\n");
+    assert_eq!(t.get("x").unwrap().line(), 1);
+    assert_eq!(t.get("y").unwrap().line(), 2);
+}
+
+#[test]
+fn test_patch_value_cannot_inject_structure() {
+    let mut t = Template::from_str("name: x\nsafe: 1\n");
+    assert!(t.patch_value("name", "a\nevil: 1"));
+    assert_eq!(t.get_value("evil"), None);
+    assert_eq!(t.get_value("name"), Some("a\nevil: 1"));
+    assert_eq!(t.get_value("safe"), Some("1"));
+
+    assert!(t.patch_value("safe", "1, hacked: true }"));
+    assert_eq!(t.get_value("hacked"), None);
+    assert_eq!(t.get_value("safe"), Some("1, hacked: true }"));
+
+    let mut t = Template::from_str("title: \"old\"\nnext: 2\n");
+    assert!(t.patch_value("title", "say \"hi\""));
+    assert_eq!(t.get_value("next"), Some("2"));
+    assert_eq!(t.as_str(), "title: \"say \\\"hi\\\"\"\nnext: 2\n");
+
+    let mut t = Template::from_str("bg: red\n");
+    assert!(t.patch_value("bg", "rgba(1, 2, 3)"));
+    assert_eq!(t.as_str(), "bg: rgba(1, 2, 3)\n");
+}
+
+#[test]
+fn test_patch_value_honours_scope() {
+    let src = "volume: 1\n#audio {\n volume: 2\n #music { volume: 3 }\n}\n#video { volume: 4 }\n";
+    let mut t = Template::from_str(src);
+    assert!(t.patch_value("audio.music.volume", "9"));
+    assert!(t.patch_value("video.volume", "0.5"));
+    assert!(t.patch_value("volume", "7"));
+    assert_eq!(t.query_str("volume"), Some("7"));
+    assert_eq!(t.query_str("audio.volume"), Some("2"));
+    assert_eq!(t.query_str("audio.music.volume"), Some("9"));
+    assert_eq!(t.query_str("video.volume"), Some("0.5"));
+    assert!(!t.patch_value("audio.missing", "1"));
+    assert!(!t.patch_value("music.volume", "1"));
+}
+
+/// Bumps a file's mtime into the future so the watcher reliably sees a change.
+fn touch_future(path: &std::path::Path, contents: &str) {
+    std::fs::write(path, contents).unwrap();
+    let file = std::fs::File::options().write(true).open(path).unwrap();
+    file.set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(2))
+        .unwrap();
+}
+
+#[test]
+fn test_reload_callback_can_reenter_watcher() {
+    use std::sync::mpsc::channel;
+    use std::time::Duration;
+
+    let path = std::env::temp_dir().join(format!("rost_reentrant_cb_{}.rost", std::process::id()));
+    std::fs::write(&path, "v: 1\n").unwrap();
+    let template = Template::load_with_options(&path, true).expect("load watched");
+
+    let (tx, rx) = channel();
+    let cb_path = path.clone();
+    template.on_reload(move |t| {
+        // Both calls take the global watcher lock; this deadlocked when callbacks ran under it.
+        let count = rost::CentralWatcher::global().active_files_count();
+        let extra = rost::HotReloadWatcher::new(&cb_path).expect("re-register");
+        let _ = extra.subscribe();
+        let _ = tx.send((t.query_i64("v"), count));
+    });
+
+    touch_future(&path, "v: 2\n");
+    let (v, count) = rx.recv_timeout(Duration::from_secs(3)).expect("callback ran without deadlock");
+    assert_eq!(v, Some(2));
+    assert!(count >= 1);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn test_watcher_handles_do_not_steal_reloads() {
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    let path = std::env::temp_dir().join(format!("rost_shared_handles_{}.rost", std::process::id()));
+    std::fs::write(&path, "v: 1\n").unwrap();
+    let mut a = Template::load_with_options(&path, true).expect("load a");
+    let mut b = Template::load_with_options(&path, true).expect("load b");
+    let c = Template::load_with_options(&path, true).expect("load c");
+    // Dropping one handle must not unregister the file for the others.
+    drop(c);
+
+    touch_future(&path, "v: 2\n");
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let (mut got_a, mut got_b) = (false, false);
+    while !(got_a && got_b) && Instant::now() < deadline {
+        got_a |= a.check_reload();
+        got_b |= b.check_reload();
+        thread::sleep(Duration::from_millis(20));
+    }
+    assert!(got_a && got_b, "both handles must observe the reload");
+    assert_eq!(a.query_i64("v"), Some(2));
+    assert_eq!(b.query_i64("v"), Some(2));
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn test_hot_reload_is_opt_in() {
+    let path = std::env::temp_dir().join(format!("rost_opt_in_{}.rost", std::process::id()));
+    std::fs::write(&path, "v: 1\n").unwrap();
+    assert!(!Template::load(&path).unwrap().is_hot_reload_enabled());
+    assert!(!Template::from_file(&path).unwrap().is_hot_reload_enabled());
+    assert!(Template::load_watched(&path).unwrap().is_hot_reload_enabled());
+    let _ = std::fs::remove_file(&path);
+}

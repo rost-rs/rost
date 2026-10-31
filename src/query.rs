@@ -42,21 +42,21 @@ impl<'a> Iterator for FieldIter<'a> {
             TAG_TITLE => {
                 let name = resolve_slice(self.data, self.bytes, self.idx);
                 let line = read_u32(self.bytes, self.idx + 8);
-                self.idx += 12;
+                self.idx += REC_NAMED - 1;
                 Some(ParsedField::Title { name, line })
             }
             TAG_SUBTITLE => {
                 let name = resolve_slice(self.data, self.bytes, self.idx);
                 let value = resolve_slice(self.data, self.bytes, self.idx + 8);
                 let line = read_u32(self.bytes, self.idx + 16);
-                self.idx += 20;
+                self.idx += REC_PAIR - 1;
                 Some(ParsedField::Subtitle { name, value, line })
             }
             TAG_COMMON_TEXT => {
                 let name = resolve_slice(self.data, self.bytes, self.idx);
                 let value = resolve_slice(self.data, self.bytes, self.idx + 8);
                 let line = read_u32(self.bytes, self.idx + 16);
-                self.idx += 20;
+                self.idx += REC_PAIR - 1;
                 Some(ParsedField::CommonText { name, value, line })
             }
             TAG_ENUM => {
@@ -64,7 +64,7 @@ impl<'a> Iterator for FieldIter<'a> {
                 let raw_variants = resolve_slice(self.data, self.bytes, self.idx + 8);
                 let start_line = read_u32(self.bytes, self.idx + 16);
                 let end_line = read_u32(self.bytes, self.idx + 20);
-                self.idx += 24;
+                self.idx += REC_RANGE - 1;
                 Some(ParsedField::Enum {
                     name,
                     raw_variants,
@@ -77,7 +77,7 @@ impl<'a> Iterator for FieldIter<'a> {
                 let raw_items = resolve_slice(self.data, self.bytes, self.idx + 8);
                 let start_line = read_u32(self.bytes, self.idx + 16);
                 let end_line = read_u32(self.bytes, self.idx + 20);
-                self.idx += 24;
+                self.idx += REC_RANGE - 1;
                 Some(ParsedField::List {
                     name,
                     raw_items,
@@ -88,7 +88,7 @@ impl<'a> Iterator for FieldIter<'a> {
             TAG_VAR_FUNC => {
                 let var_name = resolve_slice(self.data, self.bytes, self.idx);
                 let signature = resolve_slice(self.data, self.bytes, self.idx + 8);
-                self.idx += 16;
+                self.idx += REC_BINDING - 1;
                 Some(ParsedField::VarFunc {
                     var_name,
                     signature,
@@ -98,18 +98,18 @@ impl<'a> Iterator for FieldIter<'a> {
                 let name = resolve_slice(self.data, self.bytes, self.idx);
                 let value = resolve_slice(self.data, self.bytes, self.idx + 8);
                 let line = read_u32(self.bytes, self.idx + 16);
-                self.idx += 20;
+                self.idx += REC_PAIR - 1;
                 Some(ParsedField::Directive { name, value, line })
             }
             TAG_BLOCK_START => {
                 let name = resolve_slice(self.data, self.bytes, self.idx);
                 let line = read_u32(self.bytes, self.idx + 8);
-                self.idx += 12;
+                self.idx += REC_NAMED - 1;
                 Some(ParsedField::BlockStart { name, line })
             }
             TAG_BLOCK_END => {
                 let line = read_u32(self.bytes, self.idx);
-                self.idx += 4;
+                self.idx += REC_BLOCK_END - 1;
                 Some(ParsedField::BlockEnd { line })
             }
             _ => None,

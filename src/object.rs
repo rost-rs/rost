@@ -72,19 +72,7 @@ impl RostObject {
     pub fn hex(&self, key: &str) -> Option<u32> {
         let s = self.get(key)?.trim();
         let hex = s.strip_prefix('#').or_else(|| s.strip_prefix("0x")).unwrap_or(s);
-        if hex.len() == 3 {
-            let r = u32::from_str_radix(&hex[0..1], 16).ok()?;
-            let g = u32::from_str_radix(&hex[1..2], 16).ok()?;
-            let b = u32::from_str_radix(&hex[2..3], 16).ok()?;
-            return Some(((r * 17) << 16) | ((g * 17) << 8) | (b * 17));
-        }
-        if hex.len() == 8 {
-            let r = u32::from_str_radix(&hex[0..2], 16).ok()?;
-            let g = u32::from_str_radix(&hex[2..4], 16).ok()?;
-            let b = u32::from_str_radix(&hex[4..6], 16).ok()?;
-            return Some((r << 16) | (g << 8) | b);
-        }
-        u32::from_str_radix(hex, 16).ok()
+        crate::field::parse_hex_digits(hex.as_bytes())
     }
 
     /// Retrieves and parses a property as a dimension/float (`f32`).
@@ -167,7 +155,7 @@ impl Template {
             match tag {
                 crate::parser::TAG_BLOCK_START => {
                     let name = crate::parser::resolve_slice(&self.data, &self.fields, idx + 1);
-                    idx += 13;
+                    idx += crate::parser::REC_NAMED;
                     let clean_name = name.strip_prefix('#').unwrap_or(name);
                     let full_path = if let Some(p) = stack.last() {
                         format!("{}.{}", p, clean_name)
@@ -185,13 +173,9 @@ impl Template {
                 }
                 crate::parser::TAG_BLOCK_END => {
                     stack.pop();
-                    idx += 5;
+                    idx += crate::parser::REC_BLOCK_END;
                 }
-                crate::parser::TAG_COMMON_TEXT | crate::parser::TAG_SUBTITLE | crate::parser::TAG_DIRECTIVE => idx += 21,
-                crate::parser::TAG_ENUM | crate::parser::TAG_LIST => idx += 25,
-                crate::parser::TAG_VAR_FUNC => idx += 17,
-                crate::parser::TAG_TITLE => idx += 13,
-                _ => idx += 1,
+                other => idx += crate::parser::record_len(other),
             }
         }
 
@@ -211,15 +195,15 @@ impl Template {
                             let val = crate::parser::resolve_slice(&self.data, &self.fields, cur + 9);
                             obj.properties.insert(key.to_string(), val.to_string());
                         }
-                        cur += 21;
+                        cur += crate::parser::REC_PAIR;
                     }
                     crate::parser::TAG_BLOCK_START => {
                         depth += 1;
-                        cur += 13;
+                        cur += crate::parser::REC_NAMED;
                     }
                     crate::parser::TAG_BLOCK_END => {
                         depth -= 1;
-                        cur += 5;
+                        cur += crate::parser::REC_BLOCK_END;
                     }
                     crate::parser::TAG_ENUM | crate::parser::TAG_LIST => {
                         if depth == 1 {
@@ -227,12 +211,9 @@ impl Template {
                             let val = crate::parser::resolve_slice(&self.data, &self.fields, cur + 9);
                             obj.properties.insert(key.to_string(), val.to_string());
                         }
-                        cur += 25;
+                        cur += crate::parser::REC_RANGE;
                     }
-                    crate::parser::TAG_SUBTITLE | crate::parser::TAG_DIRECTIVE => cur += 21,
-                    crate::parser::TAG_VAR_FUNC => cur += 17,
-                    crate::parser::TAG_TITLE => cur += 13,
-                    _ => cur += 1,
+                    other => cur += crate::parser::record_len(other),
                 }
             }
 

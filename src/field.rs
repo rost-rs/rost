@@ -73,6 +73,42 @@ pub const HEX_LUT: [u8; 256] = {
     lut
 };
 
+/// Decodes hex digits (without the `#` / `0x` prefix) into a `u32`.
+///
+/// Color shorthands `RGB` / `RGBA` expand each digit (`f` → `ff`), and `RRGGBBAA` keeps
+/// the alpha channel in the low byte (`0xRRGGBBAA`). Other lengths are read as a plain
+/// hexadecimal number.
+///
+/// # Examples
+///
+/// ```
+/// use rost::field::parse_hex_digits;
+///
+/// assert_eq!(parse_hex_digits(b"1e1e2e"), Some(0x1e1e2e));
+/// assert_eq!(parse_hex_digits(b"11223344"), Some(0x11223344));
+/// assert_eq!(parse_hex_digits(b"fff"), Some(0xffffff));
+/// assert_eq!(parse_hex_digits(b"f00a"), Some(0xff0000aa));
+/// ```
+pub fn parse_hex_digits(hex: &[u8]) -> Option<u32> {
+    let len = hex.len();
+    if !matches!(len, 3 | 4 | 6 | 8) {
+        return u32::from_str_radix(std::str::from_utf8(hex).ok()?, 16).ok();
+    }
+    let mut acc = 0u32;
+    for &b in hex {
+        let nibble = HEX_LUT[b as usize];
+        if nibble == 0xFF {
+            return None;
+        }
+        acc = if len <= 4 {
+            (acc << 8) | (nibble as u32 * 17)
+        } else {
+            (acc << 4) | nibble as u32
+        };
+    }
+    Some(acc)
+}
+
 /// High-throughput scalar parser for hexadecimal colors or unsigned integers without heap allocations.
 #[inline(always)]
 pub fn parse_fast_u32(raw: &str) -> Option<u32> {
@@ -91,142 +127,81 @@ pub fn parse_fast_u32(raw: &str) -> Option<u32> {
     }
 
     if slice[0] == b'#' {
-        let hex = &slice[1..];
-        if hex.len() == 6 {
-            let h0 = HEX_LUT[hex[0] as usize];
-            let h1 = HEX_LUT[hex[1] as usize];
-            let h2 = HEX_LUT[hex[2] as usize];
-            let h3 = HEX_LUT[hex[3] as usize];
-            let h4 = HEX_LUT[hex[4] as usize];
-            let h5 = HEX_LUT[hex[5] as usize];
-            if (h0 | h1 | h2 | h3 | h4 | h5) != 0xFF {
-                return Some(((h0 as u32) << 20) | ((h1 as u32) << 16) | ((h2 as u32) << 12) | ((h3 as u32) << 8) | ((h4 as u32) << 4) | (h5 as u32));
-            }
-        } else if hex.len() == 8 {
-            let h0 = HEX_LUT[hex[0] as usize];
-            let h1 = HEX_LUT[hex[1] as usize];
-            let h2 = HEX_LUT[hex[2] as usize];
-            let h3 = HEX_LUT[hex[3] as usize];
-            let h4 = HEX_LUT[hex[4] as usize];
-            let h5 = HEX_LUT[hex[5] as usize];
-            if (h0 | h1 | h2 | h3 | h4 | h5) != 0xFF {
-                return Some(((h0 as u32) << 20) | ((h1 as u32) << 16) | ((h2 as u32) << 12) | ((h3 as u32) << 8) | ((h4 as u32) << 4) | (h5 as u32));
-            }
-        } else if hex.len() == 3 {
-            let h0 = HEX_LUT[hex[0] as usize];
-            let h1 = HEX_LUT[hex[1] as usize];
-            let h2 = HEX_LUT[hex[2] as usize];
-            if (h0 | h1 | h2) != 0xFF {
-                return Some(((h0 as u32 * 17) << 16) | ((h1 as u32 * 17) << 8) | (h2 as u32 * 17));
-            }
-        }
-        if let Ok(s) = std::str::from_utf8(hex) {
-            return u32::from_str_radix(s, 16).ok();
-        }
-    } else if slice.len() > 2 && (slice[0] == b'0' && (slice[1] == b'x' || slice[1] == b'X')) {
-        let hex = &slice[2..];
-        if hex.len() == 6 {
-            let h0 = HEX_LUT[hex[0] as usize];
-            let h1 = HEX_LUT[hex[1] as usize];
-            let h2 = HEX_LUT[hex[2] as usize];
-            let h3 = HEX_LUT[hex[3] as usize];
-            let h4 = HEX_LUT[hex[4] as usize];
-            let h5 = HEX_LUT[hex[5] as usize];
-            if (h0 | h1 | h2 | h3 | h4 | h5) != 0xFF {
-                return Some(((h0 as u32) << 20) | ((h1 as u32) << 16) | ((h2 as u32) << 12) | ((h3 as u32) << 8) | ((h4 as u32) << 4) | (h5 as u32));
-            }
-        } else if hex.len() == 8 {
-            let h0 = HEX_LUT[hex[0] as usize];
-            let h1 = HEX_LUT[hex[1] as usize];
-            let h2 = HEX_LUT[hex[2] as usize];
-            let h3 = HEX_LUT[hex[3] as usize];
-            let h4 = HEX_LUT[hex[4] as usize];
-            let h5 = HEX_LUT[hex[5] as usize];
-            if (h0 | h1 | h2 | h3 | h4 | h5) != 0xFF {
-                return Some(((h0 as u32) << 20) | ((h1 as u32) << 16) | ((h2 as u32) << 12) | ((h3 as u32) << 8) | ((h4 as u32) << 4) | (h5 as u32));
-            }
-        } else if hex.len() == 3 {
-            let h0 = HEX_LUT[hex[0] as usize];
-            let h1 = HEX_LUT[hex[1] as usize];
-            let h2 = HEX_LUT[hex[2] as usize];
-            if (h0 | h1 | h2) != 0xFF {
-                return Some(((h0 as u32 * 17) << 16) | ((h1 as u32 * 17) << 8) | (h2 as u32 * 17));
-            }
-        }
-        if let Ok(s) = std::str::from_utf8(hex) {
-            return u32::from_str_radix(s, 16).ok();
-        }
-    } else {
-        let mut val = 0u32;
-        for &b in slice {
-            if b >= b'0' && b <= b'9' {
-                val = val.wrapping_mul(10).wrapping_add((b - b'0') as u32);
-            } else {
-                return std::str::from_utf8(slice).ok()?.parse::<u32>().ok();
-            }
-        }
-        return Some(val);
+        return parse_hex_digits(&slice[1..]);
     }
-    None
+    if slice.len() > 2 && slice[0] == b'0' && (slice[1] == b'x' || slice[1] == b'X') {
+        return parse_hex_digits(&slice[2..]);
+    }
+    let mut val = 0u32;
+    for &b in slice {
+        if b.is_ascii_digit() {
+            val = val.checked_mul(10)?.checked_add((b - b'0') as u32)?;
+        } else {
+            return std::str::from_utf8(slice).ok()?.parse::<u32>().ok();
+        }
+    }
+    Some(val)
+}
+
+/// Strips surrounding whitespace, trailing `;`, and unit suffixes (`px`, `%`, …) from a
+/// numeric literal.
+#[inline(always)]
+fn numeric_slice(raw: &str) -> &str {
+    raw.trim_matches(|c: char| c == ' ' || c == '\t')
+        .trim_end_matches(|c: char| c == ' ' || c == '\t' || c == ';' || c == '%' || c.is_ascii_alphabetic())
+}
+
+/// Parses a short, unsigned-or-signed integer literal exactly, without float rounding.
+///
+/// Returns `None` for anything that is not a plain integer of at most `max_digits` digits.
+#[inline(always)]
+fn parse_small_int(s: &str, max_digits: usize) -> Option<i64> {
+    let (negative, digits) = match s.as_bytes().first()? {
+        b'-' => (true, &s[1..]),
+        b'+' => (false, &s[1..]),
+        _ => (false, s),
+    };
+    if digits.is_empty() || digits.len() > max_digits || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let val = digits.bytes().fold(0i64, |acc, b| acc * 10 + (b - b'0') as i64);
+    Some(if negative { -val } else { val })
 }
 
 /// Fast float parser extracting the numeric prefix without allocating strings.
+///
+/// Integers that fit the `f32` mantissa take an exact fast path; everything else is
+/// delegated to the correctly rounded standard library parser.
 #[inline(always)]
 pub fn parse_fast_f32(raw: &str) -> Option<f32> {
-    let bytes = raw.as_bytes();
-    let mut start = 0;
-    while start < bytes.len() && (bytes[start] == b' ' || bytes[start] == b'\t') {
-        start += 1;
+    let s = numeric_slice(raw);
+    if let Some(i) = parse_small_int(s, 7) {
+        return Some(i as f32);
     }
-    let mut end = bytes.len();
-    while end > start && (bytes[end - 1] == b' ' || bytes[end - 1] == b'\t' || bytes[end - 1] == b';' || bytes[end - 1].is_ascii_alphabetic() || bytes[end - 1] == b'%') {
-        end -= 1;
-    }
-    let slice = &bytes[start..end];
-    if slice.is_empty() {
-        return None;
-    }
+    s.parse::<f32>().ok()
+}
 
-    let mut i = 0;
-    let mut negative = false;
-    if slice[0] == b'-' {
-        negative = true;
-        i += 1;
-    } else if slice[0] == b'+' {
-        i += 1;
+/// Fast `f64` parser extracting the numeric prefix without allocating strings.
+///
+/// Integers that fit the `f64` mantissa take an exact fast path; everything else is
+/// delegated to the correctly rounded standard library parser.
+///
+/// # Examples
+///
+/// ```
+/// use rost::field::parse_fast_f64;
+///
+/// assert_eq!(parse_fast_f64("3.141592653589793"), Some(std::f64::consts::PI));
+/// assert_eq!(parse_fast_f64("120px"), Some(120.0));
+/// assert_eq!(parse_fast_f64("-0.5;"), Some(-0.5));
+/// ```
+#[inline(always)]
+pub fn parse_fast_f64(raw: &str) -> Option<f64> {
+    let s = numeric_slice(raw);
+    if let Some(i) = parse_small_int(s, 15) {
+        return Some(i as f64);
     }
-
-    let mut int_part: u64 = 0;
-    let mut has_digits = false;
-    while i < slice.len() && slice[i] >= b'0' && slice[i] <= b'9' {
-        int_part = int_part * 10 + (slice[i] - b'0') as u64;
-        has_digits = true;
-        i += 1;
-    }
-
-    let mut val = int_part as f64;
-    if i < slice.len() && slice[i] == b'.' {
-        i += 1;
-        let mut div = 1.0f64;
-        while i < slice.len() && slice[i] >= b'0' && slice[i] <= b'9' {
-            div *= 10.0;
-            val += ((slice[i] - b'0') as f64) / div;
-            has_digits = true;
-            i += 1;
-        }
-    }
-
-    if !has_digits {
-        return None;
-    }
-
-    if i < slice.len() {
-        let s = std::str::from_utf8(slice).ok()?;
-        return s.parse::<f32>().ok();
-    }
-
-    let res = if negative { -val as f32 } else { val as f32 };
-    Some(res)
+    s.parse::<f64>().ok()
 }
 
 /// Represents an individual field or syntactic node extracted from a `.rost` document.
@@ -387,10 +362,7 @@ impl<'a> ParsedField<'a> {
             ParsedField::List { raw_items, .. } => raw_items,
             _ => "",
         };
-        raw.split(',')
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(|s| s.trim_matches('"'))
+        TopLevelSplit::new(raw, |b| b == b',').map(unquote)
     }
 
     /// Returns the n-th item (0-indexed) if this field is a [`ParsedField::List`].
@@ -409,13 +381,79 @@ impl<'a> ParsedField<'a> {
             ParsedField::Enum { raw_variants, .. } => raw_variants,
             _ => "",
         };
-        raw.split([',', '|', '\n'])
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
+        TopLevelSplit::new(raw, |b| matches!(b, b',' | b'|' | b'\n'))
     }
 
     /// Returns the n-th variant (0-indexed) if this field is a [`ParsedField::Enum`].
     pub fn enum_variant(&self, index: usize) -> Option<&'a str> {
         self.iterate_enum().nth(index)
+    }
+}
+
+/// Removes one pair of surrounding double quotes, if present.
+#[inline]
+pub(crate) fn unquote(s: &str) -> &str {
+    if s.len() >= 2 && s.starts_with('"') && s.ends_with('"') {
+        &s[1..s.len() - 1]
+    } else {
+        s
+    }
+}
+
+/// Zero-allocation iterator splitting list/enum bodies on separator bytes that are not
+/// nested inside quotes, `(...)`, `[...]` or `{...}`. Items are trimmed and empty items
+/// are skipped.
+#[derive(Debug, Clone)]
+pub(crate) struct TopLevelSplit<'a> {
+    rest: &'a str,
+    is_sep: fn(u8) -> bool,
+}
+
+impl<'a> TopLevelSplit<'a> {
+    pub(crate) fn new(raw: &'a str, is_sep: fn(u8) -> bool) -> Self {
+        Self { rest: raw, is_sep }
+    }
+}
+
+impl<'a> Iterator for TopLevelSplit<'a> {
+    type Item = &'a str;
+
+    fn next(&mut self) -> Option<&'a str> {
+        while !self.rest.is_empty() {
+            let bytes = self.rest.as_bytes();
+            let mut depth: u32 = 0;
+            let mut in_quote = false;
+            let mut end = bytes.len();
+            let mut i = 0;
+            while i < bytes.len() {
+                let b = bytes[i];
+                if in_quote {
+                    match b {
+                        b'\\' => i += 1,
+                        b'"' => in_quote = false,
+                        _ => {}
+                    }
+                } else {
+                    match b {
+                        b'"' => in_quote = true,
+                        b'(' | b'[' | b'{' => depth += 1,
+                        b')' | b']' | b'}' => depth = depth.saturating_sub(1),
+                        _ if depth == 0 && (self.is_sep)(b) => {
+                            end = i;
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+                i += 1;
+            }
+            // Separators are ASCII, so `end` and `end + 1` are char boundaries.
+            let item = self.rest[..end].trim();
+            self.rest = if end < bytes.len() { &self.rest[end + 1..] } else { "" };
+            if !item.is_empty() {
+                return Some(item);
+            }
+        }
+        None
     }
 }

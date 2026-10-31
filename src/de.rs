@@ -35,7 +35,37 @@ impl de::Error for DeError {
 fn strip_hash(s: &str) -> &str {
     s.strip_prefix('#').unwrap_or(s)
 }
-use super::field::{parse_fast_f32, parse_fast_u32};
+use super::field::{parse_fast_f32, parse_fast_f64, parse_fast_u32, unquote, TopLevelSplit};
+
+/// Parses an integer literal of any width without narrowing through `u32`/`f32`.
+///
+/// Accepts decimal values with an optional unit suffix (`42`, `-7`, `120px`) and hex
+/// literals (`#ff0000`, `0xff`). Returns `None` when the value does not fit `T`.
+fn parse_integer<T: TryFrom<i128>>(value: &str) -> Option<T> {
+    let raw = value.trim().trim_end_matches(';');
+    if raw.starts_with('#') || raw.starts_with("0x") || raw.starts_with("0X") {
+        return parse_fast_u32(raw).and_then(|v| T::try_from(v as i128).ok());
+    }
+    let digits = raw.trim_end_matches(|c: char| c == '%' || c.is_ascii_alphabetic());
+    T::try_from(digits.parse::<i128>().ok()?).ok()
+}
+
+macro_rules! deserialize_integers {
+    ($($method:ident => $visit:ident: $ty:ty),* $(,)?) => {$(
+        #[inline]
+        fn $method<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
+            match parse_integer::<$ty>(self.value) {
+                Some(v) => visitor.$visit(v),
+                None => Err(DeError(format!(
+                    "cannot parse '{}' as {}: {}",
+                    self.name,
+                    stringify!($ty),
+                    self.value
+                ))),
+            }
+        }
+    )*};
+}
 
 struct FieldDeserializer<'a> {
     name: &'a str,
@@ -47,13 +77,21 @@ impl<'de, 'a> Deserializer<'de> for FieldDeserializer<'a> {
 
     #[inline]
     fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
-        if let Some(u) = parse_fast_u32(self.value) {
+        let s = self.value.trim().trim_end_matches(';');
+        if let Ok(v) = s.parse::<u64>() {
+            return visitor.visit_u64(v);
+        }
+        if let Ok(v) = s.parse::<i64>() {
+            return visitor.visit_i64(v);
+        }
+        if (s.starts_with('#') || s.starts_with("0x") || s.starts_with("0X"))
+            && let Some(u) = parse_fast_u32(s)
+        {
             return visitor.visit_u32(u);
         }
-        if let Some(f) = parse_fast_f32(self.value) {
-            return visitor.visit_f32(f);
+        if let Some(f) = parse_fast_f64(s) {
+            return visitor.visit_f64(f);
         }
-        let s = self.value.trim().trim_end_matches(';');
         if s == "true" {
             return visitor.visit_bool(true);
         }
@@ -73,42 +111,15 @@ impl<'de, 'a> Deserializer<'de> for FieldDeserializer<'a> {
         }
     }
 
-    #[inline]
-    fn deserialize_u32<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
-        if let Some(v) = parse_fast_u32(self.value) {
-            return visitor.visit_u32(v);
-        }
-        Err(DeError(format!("cannot parse '{}' as u32: {}", self.name, self.value)))
-    }
-
-    #[inline]
-    fn deserialize_u64<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
-        if let Some(v) = parse_fast_u32(self.value) {
-            return visitor.visit_u64(v as u64);
-        }
-        Err(DeError(format!("cannot parse '{}' as u64: {}", self.name, self.value)))
-    }
-
-    #[inline]
-    fn deserialize_i64<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
-        if let Some(v) = parse_fast_u32(self.value) {
-            return visitor.visit_i64(v as i64);
-        }
-        if let Some(f) = parse_fast_f32(self.value) {
-            return visitor.visit_i64(f as i64);
-        }
-        Err(DeError(format!("cannot parse '{}' as i64: {}", self.name, self.value)))
-    }
-
-    #[inline]
-    fn deserialize_i32<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
-        if let Some(v) = parse_fast_u32(self.value) {
-            return visitor.visit_i32(v as i32);
-        }
-        if let Some(f) = parse_fast_f32(self.value) {
-            return visitor.visit_i32(f as i32);
-        }
-        Err(DeError(format!("cannot parse '{}' as i32: {}", self.name, self.value)))
+    deserialize_integers! {
+        deserialize_i8 => visit_i8: i8,
+        deserialize_i16 => visit_i16: i16,
+        deserialize_i32 => visit_i32: i32,
+        deserialize_i64 => visit_i64: i64,
+        deserialize_u8 => visit_u8: u8,
+        deserialize_u16 => visit_u16: u16,
+        deserialize_u32 => visit_u32: u32,
+        deserialize_u64 => visit_u64: u64
     }
 
     #[inline]
@@ -121,8 +132,8 @@ impl<'de, 'a> Deserializer<'de> for FieldDeserializer<'a> {
 
     #[inline]
     fn deserialize_f64<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
-        if let Some(v) = parse_fast_f32(self.value) {
-            return visitor.visit_f64(v as f64);
+        if let Some(v) = parse_fast_f64(self.value) {
+            return visitor.visit_f64(v);
         }
         Err(DeError(format!("cannot parse '{}' as f64: {}", self.name, self.value)))
     }
@@ -145,7 +156,7 @@ impl<'de, 'a> Deserializer<'de> for FieldDeserializer<'a> {
     }
 
     serde::forward_to_deserialize_any! {
-        i8 i16 u8 u16 char bytes byte_buf unit unit_struct newtype_struct seq tuple
+        char bytes byte_buf unit unit_struct newtype_struct seq tuple
         tuple_struct map struct enum identifier ignored_any
     }
 }
@@ -169,7 +180,7 @@ impl<'de, 'a> Deserializer<'de> for RawListDeserializer<'a> {
     #[inline]
     fn deserialize_seq<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
         let clean = self.raw.trim().trim_start_matches('[').trim_end_matches(']');
-        let items: Vec<&'a str> = clean.split(',').map(str::trim).filter(|s| !s.is_empty()).collect();
+        let items: Vec<&'a str> = TopLevelSplit::new(clean, |b| b == b',').collect();
         visitor.visit_seq(RawSeqAccess { items, idx: 0 })
     }
 
@@ -192,7 +203,7 @@ impl<'de, 'a> SeqAccess<'de> for RawSeqAccess<'a> {
         if self.idx >= self.items.len() {
             return Ok(None);
         }
-        let item = self.items[self.idx].trim_matches('"');
+        let item = unquote(self.items[self.idx]);
         self.idx += 1;
         seed.deserialize(item.into_deserializer()).map(Some)
     }
@@ -222,17 +233,13 @@ impl<'a> BytecodeStream<'a> {
             match tag {
                 TAG_BLOCK_START => {
                     depth += 1;
-                    self.idx += 13;
+                    self.idx += REC_NAMED;
                 }
                 TAG_BLOCK_END => {
                     depth -= 1;
-                    self.idx += 5;
+                    self.idx += REC_BLOCK_END;
                 }
-                TAG_COMMON_TEXT | TAG_SUBTITLE | TAG_DIRECTIVE => self.idx += 21,
-                TAG_ENUM | TAG_LIST => self.idx += 25,
-                TAG_VAR_FUNC => self.idx += 17,
-                TAG_TITLE => self.idx += 13,
-                _ => self.idx += 1,
+                other => self.idx += record_len(other),
             }
         }
     }
@@ -277,20 +284,20 @@ impl<'de, 'a, 's> MapAccess<'de> for RootMapStreamAccess<'a, 's> {
             let tag = self.stream.bytes[self.stream.idx];
             if tag == TAG_BLOCK_START {
                 let name = resolve_slice(self.stream.data, self.stream.bytes, self.stream.idx + 1);
-                self.stream.idx += 13;
+                self.stream.idx += REC_NAMED;
                 let clean = strip_hash(name);
                 self.current_block = Some(clean);
                 return seed.deserialize(clean.into_deserializer()).map(Some);
             } else if tag == TAG_BLOCK_END {
-                self.stream.idx += 5;
+                self.stream.idx += REC_BLOCK_END;
             } else if tag == TAG_COMMON_TEXT || tag == TAG_SUBTITLE || tag == TAG_DIRECTIVE {
-                self.stream.idx += 21;
+                self.stream.idx += REC_PAIR;
             } else if tag == TAG_ENUM || tag == TAG_LIST {
-                self.stream.idx += 25;
+                self.stream.idx += REC_RANGE;
             } else if tag == TAG_VAR_FUNC {
-                self.stream.idx += 17;
+                self.stream.idx += REC_BINDING;
             } else if tag == TAG_TITLE {
-                self.stream.idx += 13;
+                self.stream.idx += REC_NAMED;
             } else {
                 self.stream.idx += 1;
             }
@@ -354,13 +361,13 @@ impl<'de, 'a, 's> MapAccess<'de> for BlockMapStreamAccess<'a, 's> {
                 TAG_COMMON_TEXT => {
                     let key = resolve_slice(self.stream.data, self.stream.bytes, self.stream.idx + 1);
                     let val = resolve_slice(self.stream.data, self.stream.bytes, self.stream.idx + 9);
-                    self.stream.idx += 21;
+                    self.stream.idx += REC_PAIR;
                     self.current_entry = Some(StreamEntry::Field { name: key, val });
                     return seed.deserialize(key.into_deserializer()).map(Some);
                 }
                 TAG_BLOCK_START => {
                     let name = resolve_slice(self.stream.data, self.stream.bytes, self.stream.idx + 1);
-                    self.stream.idx += 13;
+                    self.stream.idx += REC_NAMED;
                     let clean = strip_hash(name);
                     self.current_entry = Some(StreamEntry::SubBlock);
                     return seed.deserialize(clean.into_deserializer()).map(Some);
@@ -368,29 +375,29 @@ impl<'de, 'a, 's> MapAccess<'de> for BlockMapStreamAccess<'a, 's> {
                 TAG_LIST => {
                     let key = resolve_slice(self.stream.data, self.stream.bytes, self.stream.idx + 1);
                     let raw = resolve_slice(self.stream.data, self.stream.bytes, self.stream.idx + 9);
-                    self.stream.idx += 25;
+                    self.stream.idx += REC_RANGE;
                     self.current_entry = Some(StreamEntry::List { raw });
                     return seed.deserialize(key.into_deserializer()).map(Some);
                 }
                 TAG_ENUM => {
                     let key = resolve_slice(self.stream.data, self.stream.bytes, self.stream.idx + 1);
                     let raw = resolve_slice(self.stream.data, self.stream.bytes, self.stream.idx + 9);
-                    self.stream.idx += 25;
+                    self.stream.idx += REC_RANGE;
                     self.current_entry = Some(StreamEntry::Enum { raw });
                     return seed.deserialize(key.into_deserializer()).map(Some);
                 }
                 TAG_BLOCK_END => {
-                    self.stream.idx += 5;
+                    self.stream.idx += REC_BLOCK_END;
                     return Ok(None);
                 }
                 TAG_SUBTITLE | TAG_DIRECTIVE => {
-                    self.stream.idx += 21;
+                    self.stream.idx += REC_PAIR;
                 }
                 TAG_VAR_FUNC => {
-                    self.stream.idx += 17;
+                    self.stream.idx += REC_BINDING;
                 }
                 TAG_TITLE => {
-                    self.stream.idx += 13;
+                    self.stream.idx += REC_NAMED;
                 }
                 _ => {
                     self.stream.idx += 1;
@@ -483,21 +490,21 @@ impl Template {
             let tag = self.fields[idx];
             if tag == TAG_BLOCK_START {
                 let name = resolve_slice(&self.data, &self.fields, idx + 1);
-                idx += 13;
+                idx += REC_NAMED;
                 if strip_hash(name) == clean {
                     found = true;
                     break;
                 }
             } else if tag == TAG_BLOCK_END {
-                idx += 5;
+                idx += REC_BLOCK_END;
             } else if tag == TAG_COMMON_TEXT || tag == TAG_SUBTITLE || tag == TAG_DIRECTIVE {
-                idx += 21;
+                idx += REC_PAIR;
             } else if tag == TAG_ENUM || tag == TAG_LIST {
-                idx += 25;
+                idx += REC_RANGE;
             } else if tag == TAG_VAR_FUNC {
-                idx += 17;
+                idx += REC_BINDING;
             } else if tag == TAG_TITLE {
-                idx += 13;
+                idx += REC_NAMED;
             } else {
                 idx += 1;
             }

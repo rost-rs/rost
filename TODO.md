@@ -9,25 +9,25 @@ The execution plan lives in [`SPRINTS.md`](SPRINTS.md).
 
 ### Phase 0 — Correctness and soundness (blocking)
 
-- [ ] Validate UTF-8 in `Template::from_bytes` / `load` (`resolve_slice` uses `from_utf8_unchecked` over unvalidated bytes → UB on arbitrary input)
-- [ ] Make `Template::data` and `Template::fields` private (mutating them breaks the arena invariants the `unsafe` code relies on)
+- [x] Validate UTF-8 in `Template::from_bytes` / `load` (`resolve_slice` uses `from_utf8_unchecked` over unvalidated bytes → UB on arbitrary input)
+- [x] Make `Template::data` and `Template::fields` private (mutating them breaks the arena invariants the `unsafe` code relies on)
 - [ ] Replace silent parsing with `Result<Template, ParseError>` carrying line/column/span (unclosed quotes, unclosed `|`/`[`, stray `}`, duplicate keys)
-- [ ] Fix `parse_fast_u32` overflow via `wrapping_mul` (`4294967297` → `1`)
-- [ ] Fix 8-digit hex (`#RRGGBBAA`): alpha channel is dropped and the last two digits are not validated
-- [ ] Serde: `u64`/`i64`/`f64` must not go through `u32`/`f32` (`5000000000` → `705032704`, `-16777217` → `-16777216`, `pi` loses precision)
-- [ ] Correctly rounded float parsing (no `val += d / div` accumulation)
-- [ ] Unquoted values containing `,` (`rgba(1, 2, 3)`, `font: Inter, sans`) get truncated: respect nested parentheses/brackets when searching for the delimiter
-- [ ] Lists and enums: splitting on `,` ignores quotes (`["a, b"]` → 3 items); nested lists unsupported although the parser tracks depth
-- [ ] Count lines inside multi-line strings and `=` expressions (line numbers drift)
-- [ ] `patch_value`: escape/validate the new value (`"a\nevil: 1"` injects a new key) and honour scope (`block.key`) instead of the first global match
+- [x] Fix `parse_fast_u32` overflow via `wrapping_mul` (`4294967297` → `1`)
+- [x] Fix 8-digit hex (`#RRGGBBAA`): alpha channel is dropped and the last two digits are not validated
+- [x] Serde: `u64`/`i64`/`f64` must not go through `u32`/`f32` (`5000000000` → `705032704`, `-16777217` → `-16777216`, `pi` loses precision)
+- [x] Correctly rounded float parsing (no `val += d / div` accumulation)
+- [x] Unquoted values containing `,` (`rgba(1, 2, 3)`, `font: Inter, sans`) get truncated: respect nested parentheses/brackets when searching for the delimiter
+- [x] Lists and enums: splitting on `,` ignores quotes (`["a, b"]` → 3 items); nested lists unsupported although the parser tracks depth
+- [x] Count lines inside multi-line strings and `=` expressions (line numbers drift)
+- [x] `patch_value`: escape/validate the new value (`"a\nevil: 1"` injects a new key) and honour scope (`block.key`) instead of the first global match
 - [ ] `Template::get` / `get_value` without a path return fields from inside blocks as if they were top-level
 - [ ] `from_template` (serde) ignores top-level properties: only blocks are iterated
-- [ ] Watcher: callbacks run while holding the global `Mutex` → deadlock if a callback calls `subscribe`/`on_reload`/`check_reload`
-- [ ] Watcher: `latest_reloaded` is a single slot shared by every handle of the same file (one handle steals another's update); `Drop` removes the state while other handles are alive
-- [ ] Watcher: `Template::load` enables hot-reload by default → should be opt-in
+- [x] Watcher: callbacks run while holding the global `Mutex` → deadlock if a callback calls `subscribe`/`on_reload`/`check_reload`
+- [x] Watcher: `latest_reloaded` is a single slot shared by every handle of the same file (one handle steals another's update); `Drop` removes the state while other handles are alive
+- [x] Watcher: `Template::load` enables hot-reload by default → should be opt-in
 - [ ] Watcher: 100 ms polling + `sleep(15ms)` while holding the lock; migrate to `notify` (inotify/FSEvents/ReadDirectoryChangesW) behind a feature flag
-- [ ] Remove `Template::dump` (swallows IO errors by returning an empty template)
-- [ ] Unify bytecode record sizes (13/21/25/17/5) in constants; they are duplicated in `lib.rs`, `query.rs`, `de.rs`
+- [x] Remove `Template::dump` (swallows IO errors by returning an empty template)
+- [x] Unify bytecode record sizes (13/21/25/17/5) in constants; they are duplicated in `lib.rs`, `query.rs`, `de.rs`
 - [ ] Fuzzing (`cargo-fuzz`) of parser and deserializer + round-trip property tests (`proptest`)
 - [ ] `miri` in CI for all `unsafe` code
 
@@ -88,7 +88,7 @@ The execution plan lives in [`SPRINTS.md`](SPRINTS.md).
 - [ ] Verify that `rost-lsp` and `tree-sitter-rost` exist and track the spec (the README links them)
 - [ ] `rost` CLI: `fmt`, `check`, `convert` (json/toml/yaml), `diff`, `query`
 - [ ] Reproducible `criterion` benchmarks against `serde_json`, `simd-json`, `toml`, `lightningcss` (back up the "500 MB/s" claim)
-- [ ] CI: tests, clippy `-D warnings` (warnings pending today), `miri`, fuzz, coverage
+- [ ] CI: tests, clippy `-D warnings` (clippy is clean as of Sprint 1), `miri`, fuzz, coverage
 - [ ] Docs: user guide, cookbook (UI, game config, linter), CHANGELOG
 - [ ] Remove redundant aliases (`dump`/`load`/`from_file`, `finish`/`into_string`) before 1.0
-- [ ] Remove `extern crate self as utilrs_rost;` (leftover from a previous name)
+- [x] Remove `extern crate self as utilrs_rost;` (leftover from a previous name)
