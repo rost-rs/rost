@@ -44,6 +44,7 @@ struct Window {
 
 const ROST_CONFIG: &str = "title: \"My App\"\nversion: 3\ndebug: false\n#window {\n    width: 1280\n    height: 720\n    scale: 1.25\n    theme: \"dark\"\n}\n";
 const JSON_CONFIG: &str = r#"{"title": "My App", "version": 3, "debug": false, "window": {"width": 1280, "height": 720, "scale": 1.25, "theme": "dark"}}"#;
+const JSON_CONFIG_PRETTY: &str = "{\n    \"title\": \"My App\",\n    \"version\": 3,\n    \"debug\": false,\n    \"window\": {\n        \"width\": 1280,\n        \"height\": 720,\n        \"scale\": 1.25,\n        \"theme\": \"dark\"\n    }\n}\n";
 const TOML_CONFIG: &str = "title = \"My App\"\nversion = 3\ndebug = false\n[window]\nwidth = 1280\nheight = 720\nscale = 1.25\ntheme = \"dark\"\n";
 
 fn rost_doc(n: usize) -> String {
@@ -61,6 +62,18 @@ fn json_doc(n: usize) -> String {
         .map(|i| {
             format!(
                 "\n  \"item_{i}\": {{\"id\": {i}, \"name\": \"item {i}\", \"price\": {i}.5, \"active\": true, \"color\": \"#1e1e2e\"}}"
+            )
+        })
+        .collect();
+    format!("{{{}\n}}", body.join(","))
+}
+
+/// JSON with the same layout as the rost document: one field per line, indented.
+fn json_pretty_doc(n: usize) -> String {
+    let body: Vec<String> = (0..n)
+        .map(|i| {
+            format!(
+                "\n    \"item_{i}\": {{\n        \"id\": {i},\n        \"name\": \"item {i}\",\n        \"price\": {i}.5,\n        \"active\": true,\n        \"color\": \"#1e1e2e\"\n    }}"
             )
         })
         .collect();
@@ -108,8 +121,15 @@ fn main() {
     let n: usize = std::env::var("ROST_BENCH_ITEMS").ok().and_then(|v| v.parse().ok()).unwrap_or(50_000);
     let rost_src = rost_doc(n);
     let json_src = json_doc(n);
+    let json_pretty = json_pretty_doc(n);
     let toml_src = toml_doc(n);
-    println!("Documents: {n} records — rost {} B, JSON {} B, TOML {} B\n", rost_src.len(), json_src.len(), toml_src.len());
+    println!(
+        "Documents: {n} records — rost {} B, JSON {} B (pretty {} B), TOML {} B\n",
+        rost_src.len(),
+        json_src.len(),
+        json_pretty.len(),
+        toml_src.len()
+    );
     println!("| Workload | Contender | Median |");
     println!("|---|---|---|");
 
@@ -126,7 +146,11 @@ fn main() {
     let d = median(9, || {
         black_box(serde_json::from_str::<HashMap<String, Item>>(black_box(&json_src)).unwrap());
     });
-    row(big, "serde_json", throughput(json_src.len(), d));
+    row(big, "serde_json (one record per line)", throughput(json_src.len(), d));
+    let d = median(9, || {
+        black_box(serde_json::from_str::<HashMap<String, Item>>(black_box(&json_pretty)).unwrap());
+    });
+    row(big, "serde_json (pretty, same layout as rost)", throughput(json_pretty.len(), d));
     let d = median(5, || {
         black_box(toml::from_str::<HashMap<String, Item>>(black_box(&toml_src)).unwrap());
     });
@@ -152,7 +176,13 @@ fn main() {
             black_box(serde_json::from_str::<Config>(black_box(JSON_CONFIG)).unwrap());
         }
     });
-    row(small, "serde_json", per_op(d, LOADS));
+    row(small, "serde_json (compact)", per_op(d, LOADS));
+    let d = median(15, || {
+        for _ in 0..LOADS {
+            black_box(serde_json::from_str::<Config>(black_box(JSON_CONFIG_PRETTY)).unwrap());
+        }
+    });
+    row(small, "serde_json (pretty)", per_op(d, LOADS));
     let d = median(15, || {
         for _ in 0..LOADS {
             black_box(toml::from_str::<Config>(black_box(TOML_CONFIG)).unwrap());
