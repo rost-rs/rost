@@ -628,3 +628,29 @@ fn test_top_level_get_does_not_see_nested_fields() {
     let t = Template::parse("#a { x: 1 }\nx: 9\n").unwrap();
     assert_eq!(t.get_value("x"), Some("9"));
 }
+
+#[cfg(feature = "serde")]
+#[test]
+fn test_from_template_reads_top_level_properties() {
+    use serde::Deserialize;
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct Window {
+        width: u32,
+    }
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct App {
+        name: String,
+        volume: f32,
+        tags: Vec<String>,
+        window: Window,
+    }
+
+    let t = Template::parse("name: \"rost\"\nvolume: 0.5\ntags [a, b]\n#window { width: 800 }\n").unwrap();
+    let app: App = rost::from_template(&t).expect("deserialize root");
+    assert_eq!(
+        app,
+        App { name: "rost".into(), volume: 0.5, tags: vec!["a".into(), "b".into()], window: Window { width: 800 } }
+    );
+}

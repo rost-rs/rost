@@ -251,9 +251,11 @@ impl<'de, 'a, 's> Deserializer<'de> for TemplateStreamDeserializer<'a, 's> {
 
     #[inline]
     fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
-        visitor.visit_map(RootMapStreamAccess {
+        // The root is a block without braces: top-level properties, lists, enums and
+        // blocks all become keys.
+        visitor.visit_map(BlockMapStreamAccess {
             stream: self.stream,
-            current_block: None,
+            current_entry: None,
         })
     }
 
@@ -261,46 +263,6 @@ impl<'de, 'a, 's> Deserializer<'de> for TemplateStreamDeserializer<'a, 's> {
         bool i8 i16 i32 i64 u8 u16 u32 u64 f32 f64 char str string
         bytes byte_buf option unit unit_struct newtype_struct seq tuple
         tuple_struct map struct enum identifier ignored_any
-    }
-}
-
-struct RootMapStreamAccess<'a, 's> {
-    stream: &'s mut BytecodeStream<'a>,
-    current_block: Option<&'a str>,
-}
-
-impl<'de, 'a, 's> MapAccess<'de> for RootMapStreamAccess<'a, 's> {
-    type Error = DeError;
-
-    fn next_key_seed<K: DeserializeSeed<'de>>(&mut self, seed: K) -> Result<Option<K::Value>, Self::Error> {
-        while self.stream.idx < self.stream.bytes.len() {
-            let tag = self.stream.bytes[self.stream.idx];
-            if tag == TAG_BLOCK_START {
-                let name = resolve_slice(self.stream.data, self.stream.bytes, self.stream.idx + 1);
-                self.stream.idx += 13;
-                let clean = strip_hash(name);
-                self.current_block = Some(clean);
-                return seed.deserialize(clean.into_deserializer()).map(Some);
-            } else if tag == TAG_BLOCK_END {
-                self.stream.idx += 5;
-            } else if tag == TAG_COMMON_TEXT || tag == TAG_SUBTITLE || tag == TAG_DIRECTIVE {
-                self.stream.idx += 21;
-            } else if tag == TAG_ENUM || tag == TAG_LIST {
-                self.stream.idx += 25;
-            } else if tag == TAG_VAR_FUNC {
-                self.stream.idx += 17;
-            } else if tag == TAG_TITLE {
-                self.stream.idx += 13;
-            } else {
-                self.stream.idx += 1;
-            }
-        }
-        Ok(None)
-    }
-
-    fn next_value_seed<V: DeserializeSeed<'de>>(&mut self, seed: V) -> Result<V::Value, Self::Error> {
-        let _ = self.current_block.take();
-        seed.deserialize(BlockStreamDeserializer { stream: self.stream })
     }
 }
 
