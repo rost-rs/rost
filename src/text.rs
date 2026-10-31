@@ -131,6 +131,18 @@ fn key_end(bytes: &[u8], mut pos: usize) -> usize {
     pos
 }
 
+/// Returns the end of a block or directive name: whitespace, `{` or `:`.
+#[inline(always)]
+fn name_end(bytes: &[u8], mut pos: usize) -> usize {
+    while let Some(&b) = bytes.get(pos) {
+        if b.is_ascii_whitespace() || b == b'{' || b == b':' {
+            break;
+        }
+        pos += 1;
+    }
+    pos
+}
+
 /// Completes a bare token ending at `end` if nothing but trailing whitespace or `;`
 /// separates it from the end of the value. Returns the position after the value,
 /// consuming a following `,` like [`Parser::read_scalar`].
@@ -183,15 +195,8 @@ impl<'de> Parser<'de> {
     #[inline]
     fn take_name(&mut self) -> &'de str {
         let start = self.pos;
-        let mut pos = start;
-        while let Some(&b) = self.bytes.get(pos) {
-            if b.is_ascii_whitespace() || b == b'{' || b == b':' {
-                break;
-            }
-            pos += 1;
-        }
-        self.pos = pos;
-        &self.src[start..pos]
+        self.pos = name_end(self.bytes, start);
+        &self.src[start..self.pos]
     }
 
     /// Reads the value after `key:` and reports how it was quoted.
@@ -388,6 +393,18 @@ impl<'de> Entries<'_, 'de> {
             Some(b'}') if !self.root => {
                 self.p.pos = start + 1;
                 Ok(None)
+            }
+            Some(b'#') if bytes.get(start + 1) != Some(&b'#') => {
+                // `#name {` block selector; `#Title` headers take the slow path.
+                let end = name_end(bytes, start + 1);
+                let brace = skip_inline_ws(bytes, end);
+                if bytes.get(brace) != Some(&b'{') {
+                    self.p.pos = start;
+                    return self.next_entry_slow();
+                }
+                self.p.pos = brace + 1;
+                self.pending = Some(Pending::Block);
+                Ok(Some(&self.p.src[start + 1..end]))
             }
             _ => {
                 self.p.pos = start;
