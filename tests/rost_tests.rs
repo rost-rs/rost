@@ -986,3 +986,28 @@ fn test_path_index_tracks_patches() {
     assert_eq!(t.query_string("audio.name").as_deref(), Some("a much longer name"));
     assert_eq!(t.query_raw_value("after"), Some("x"));
 }
+
+#[cfg(feature = "serde")]
+#[test]
+fn test_serde_borrows_strings_from_the_template() {
+    use serde::Deserialize;
+    use std::borrow::Cow;
+
+    #[derive(Debug, Deserialize)]
+    struct Theme<'a> {
+        name: &'a str,
+        accent: &'a str,
+        #[serde(borrow)]
+        note: Cow<'a, str>,
+        #[serde(borrow)]
+        escaped: Cow<'a, str>,
+    }
+
+    let t = Template::parse("name: \"dark\"\naccent: #1e1e2e\nnote: \"plain\"\nescaped: \"a\\tb\"\n").unwrap();
+    let theme: Theme = rost::from_template(&t).unwrap();
+    assert_eq!((theme.name, theme.accent), ("dark", "#1e1e2e"));
+    // Strings without escapes point into the document; escaped ones are decoded copies.
+    assert!(t.as_bytes().as_ptr_range().contains(&theme.name.as_ptr()));
+    assert!(matches!(theme.note, Cow::Borrowed("plain")));
+    assert_eq!(theme.escaped, "a\tb");
+}

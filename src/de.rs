@@ -5,9 +5,8 @@
 //! [`serde::Deserialize`].
 
 use std::fmt;
-use serde::de::{
-    self, DeserializeSeed, Deserializer, IntoDeserializer, MapAccess, SeqAccess, Visitor,
-};
+use serde::de::value::BorrowedStrDeserializer;
+use serde::de::{self, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
 
 use super::parser::*;
 use super::query::BlockView;
@@ -87,15 +86,15 @@ impl<'a> FieldDeserializer<'a> {
         }
     }
 
-    fn visit_text<'de, V: Visitor<'de>>(&self, visitor: V) -> Result<V::Value, DeError> {
+    fn visit_text<V: Visitor<'a>>(&self, visitor: V) -> Result<V::Value, DeError> {
         match self.text() {
-            Cow::Borrowed(s) => visitor.visit_str(s),
+            Cow::Borrowed(s) => visitor.visit_borrowed_str(s),
             Cow::Owned(s) => visitor.visit_string(s),
         }
     }
 }
 
-impl<'de, 'a> Deserializer<'de> for FieldDeserializer<'a> {
+impl<'de> Deserializer<'de> for FieldDeserializer<'de> {
     type Error = DeError;
 
     #[inline]
@@ -127,7 +126,7 @@ impl<'de, 'a> Deserializer<'de> for FieldDeserializer<'a> {
         if s == "false" {
             return visitor.visit_bool(false);
         }
-        visitor.visit_str(s.trim_matches('"'))
+        visitor.visit_borrowed_str(s.trim_matches('"'))
     }
 
     #[inline]
@@ -199,7 +198,7 @@ struct RawListDeserializer<'a> {
     raw: &'a str,
 }
 
-impl<'de, 'a> Deserializer<'de> for RawListDeserializer<'a> {
+impl<'de> Deserializer<'de> for RawListDeserializer<'de> {
     type Error = DeError;
 
     #[inline]
@@ -210,7 +209,7 @@ impl<'de, 'a> Deserializer<'de> for RawListDeserializer<'a> {
     #[inline]
     fn deserialize_seq<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
         let clean = self.raw.trim().trim_start_matches('[').trim_end_matches(']');
-        let items: Vec<&'a str> = TopLevelSplit::new(clean, |b| b == b',').collect();
+        let items: Vec<&'de str> = TopLevelSplit::new(clean, |b| b == b',').collect();
         visitor.visit_seq(RawSeqAccess { items, idx: 0 })
     }
 
@@ -226,7 +225,7 @@ struct RawSeqAccess<'a> {
     idx: usize,
 }
 
-impl<'de, 'a> SeqAccess<'de> for RawSeqAccess<'a> {
+impl<'de> SeqAccess<'de> for RawSeqAccess<'de> {
     type Error = DeError;
 
     fn next_element_seed<T: DeserializeSeed<'de>>(&mut self, seed: T) -> Result<Option<T::Value>, Self::Error> {
@@ -235,7 +234,7 @@ impl<'de, 'a> SeqAccess<'de> for RawSeqAccess<'a> {
         }
         let item = unquote(self.items[self.idx]);
         self.idx += 1;
-        seed.deserialize(item.into_deserializer()).map(Some)
+        seed.deserialize(BorrowedStrDeserializer::new(item)).map(Some)
     }
 }
 
@@ -283,7 +282,7 @@ struct TemplateStreamDeserializer<'a, 's> {
     stream: &'s mut BytecodeStream<'a>,
 }
 
-impl<'de, 'a, 's> Deserializer<'de> for TemplateStreamDeserializer<'a, 's> {
+impl<'de, 's> Deserializer<'de> for TemplateStreamDeserializer<'de, 's> {
     type Error = DeError;
 
     #[inline]
@@ -319,7 +318,7 @@ struct BlockMapStreamAccess<'a, 's> {
     current_entry: Option<StreamEntry<'a>>,
 }
 
-impl<'de, 'a, 's> Deserializer<'de> for BlockStreamDeserializer<'a, 's> {
+impl<'de, 's> Deserializer<'de> for BlockStreamDeserializer<'de, 's> {
     type Error = DeError;
 
     #[inline]
@@ -343,7 +342,7 @@ impl<'de, 'a, 's> Deserializer<'de> for BlockStreamDeserializer<'a, 's> {
     }
 }
 
-impl<'de, 'a, 's> MapAccess<'de> for BlockMapStreamAccess<'a, 's> {
+impl<'de, 's> MapAccess<'de> for BlockMapStreamAccess<'de, 's> {
     type Error = DeError;
 
     fn next_key_seed<K: DeserializeSeed<'de>>(&mut self, seed: K) -> Result<Option<K::Value>, Self::Error> {
@@ -360,28 +359,28 @@ impl<'de, 'a, 's> MapAccess<'de> for BlockMapStreamAccess<'a, 's> {
                     );
                     self.stream.idx += REC_PAIR;
                     self.current_entry = Some(StreamEntry::Field { name: key, val, quote });
-                    return seed.deserialize(key.into_deserializer()).map(Some);
+                    return seed.deserialize(BorrowedStrDeserializer::new(key)).map(Some);
                 }
                 TAG_BLOCK_START => {
                     let name = resolve_slice(self.stream.data, self.stream.bytes, self.stream.idx + 1);
                     self.stream.idx += REC_NAMED;
                     let clean = strip_hash(name);
                     self.current_entry = Some(StreamEntry::SubBlock);
-                    return seed.deserialize(clean.into_deserializer()).map(Some);
+                    return seed.deserialize(BorrowedStrDeserializer::new(clean)).map(Some);
                 }
                 TAG_LIST => {
                     let key = resolve_slice(self.stream.data, self.stream.bytes, self.stream.idx + 1);
                     let raw = resolve_slice(self.stream.data, self.stream.bytes, self.stream.idx + 9);
                     self.stream.idx += REC_RANGE;
                     self.current_entry = Some(StreamEntry::List { raw });
-                    return seed.deserialize(key.into_deserializer()).map(Some);
+                    return seed.deserialize(BorrowedStrDeserializer::new(key)).map(Some);
                 }
                 TAG_ENUM => {
                     let key = resolve_slice(self.stream.data, self.stream.bytes, self.stream.idx + 1);
                     let raw = resolve_slice(self.stream.data, self.stream.bytes, self.stream.idx + 9);
                     self.stream.idx += REC_RANGE;
                     self.current_entry = Some(StreamEntry::Enum { raw });
-                    return seed.deserialize(key.into_deserializer()).map(Some);
+                    return seed.deserialize(BorrowedStrDeserializer::new(key)).map(Some);
                 }
                 TAG_BLOCK_END => {
                     self.stream.idx += REC_BLOCK_END;
@@ -417,7 +416,7 @@ impl<'de, 'a, 's> MapAccess<'de> for BlockMapStreamAccess<'a, 's> {
             }
             StreamEntry::Enum { raw, .. } => {
                 let first = raw.split(',').next().unwrap_or("").trim();
-                seed.deserialize(first.into_deserializer())
+                seed.deserialize(BorrowedStrDeserializer::new(first))
             }
         }
     }
@@ -427,8 +426,8 @@ impl<'de, 'a, 's> MapAccess<'de> for BlockMapStreamAccess<'a, 's> {
 // 5. PUBLIC API & TEMPLATE INTEGRATION
 // ==============================================================================
 
-/// Deserializes a [`BlockView`] into type `T`.
-pub fn from_block<'de, 'a, T: de::Deserialize<'de>>(block: &'a BlockView<'a>) -> Result<T, DeError> {
+/// Deserializes a [`BlockView`] into type `T`, borrowing strings from the document.
+pub fn from_block<'a, T: de::Deserialize<'a>>(block: &'a BlockView<'a>) -> Result<T, DeError> {
     T::deserialize(BlockViewDeserializer { block, idx: 0 })
 }
 
@@ -437,7 +436,7 @@ struct BlockViewDeserializer<'a> {
     idx: usize,
 }
 
-impl<'de, 'a> Deserializer<'de> for BlockViewDeserializer<'a> {
+impl<'de> Deserializer<'de> for BlockViewDeserializer<'de> {
     type Error = DeError;
 
     fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
@@ -451,7 +450,7 @@ impl<'de, 'a> Deserializer<'de> for BlockViewDeserializer<'a> {
     }
 }
 
-impl<'de, 'a> MapAccess<'de> for BlockViewDeserializer<'a> {
+impl<'de> MapAccess<'de> for BlockViewDeserializer<'de> {
     type Error = DeError;
 
     fn next_key_seed<K: DeserializeSeed<'de>>(&mut self, seed: K) -> Result<Option<K::Value>, Self::Error> {
@@ -459,7 +458,7 @@ impl<'de, 'a> MapAccess<'de> for BlockViewDeserializer<'a> {
             return Ok(None);
         }
         let f = &self.block.fields[self.idx];
-        seed.deserialize(f.name().into_deserializer()).map(Some)
+        seed.deserialize(BorrowedStrDeserializer::new(f.name())).map(Some)
     }
 
     fn next_value_seed<V: DeserializeSeed<'de>>(&mut self, seed: V) -> Result<V::Value, Self::Error> {
@@ -472,7 +471,9 @@ impl<'de, 'a> MapAccess<'de> for BlockViewDeserializer<'a> {
 }
 
 /// Deserializes a [`Template`] into type `T`.
-pub fn from_template<'de, 'a, T: de::Deserialize<'de>>(template: &'a Template) -> Result<T, DeError> {
+///
+/// Strings without escapes are borrowed from the document, so `T` may hold `&'a str`.
+pub fn from_template<'a, T: de::Deserialize<'a>>(template: &'a Template) -> Result<T, DeError> {
     let mut stream = BytecodeStream::new(&template.data, &template.fields, 0);
     T::deserialize(TemplateStreamDeserializer { stream: &mut stream })
 }
