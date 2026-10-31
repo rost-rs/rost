@@ -156,20 +156,91 @@ impl Diagnostics for Vec<(ParseErrorKind, Range<usize>)> {
     }
 }
 
+/// Keys defined in each open scope, used by strict mode to detect duplicates.
+///
+/// All scopes share one key stack, so opening a block allocates nothing; small scopes
+/// (the common case) are checked with a linear scan, and a scope switches to a hash set
+/// only once it grows past [`ScopeKeys::LINEAR_MAX`] keys.
+struct ScopeKeys<'r> {
+    keys: Vec<&'r [u8]>,
+    scopes: Vec<Scope<'r>>,
+}
+
+struct Scope<'r> {
+    start: usize,
+    set: Option<HashSet<&'r [u8]>>,
+}
+
+impl<'r> ScopeKeys<'r> {
+    const LINEAR_MAX: usize = 16;
+
+    /// Creates the tracker without allocating; the root scope is added on first use.
+    fn new() -> Self {
+        Self {
+            keys: Vec::new(),
+            scopes: Vec::new(),
+        }
+    }
+
+    fn root(&mut self) {
+        if self.scopes.is_empty() {
+            self.scopes.push(Scope { start: 0, set: None });
+        }
+    }
+
+    fn open(&mut self) {
+        self.root();
+        self.scopes.push(Scope {
+            start: self.keys.len(),
+            set: None,
+        });
+    }
+
+    fn close(&mut self) {
+        if self.scopes.len() > 1
+            && let Some(scope) = self.scopes.pop()
+        {
+            self.keys.truncate(scope.start);
+        }
+    }
+
+    /// Records `key` in the innermost scope; returns `false` if it was already there.
+    fn insert(&mut self, key: &'r [u8]) -> bool {
+        self.root();
+        let Some(scope) = self.scopes.last_mut() else {
+            return true;
+        };
+        if let Some(set) = &mut scope.set {
+            return set.insert(key);
+        }
+        let current = &self.keys[scope.start..];
+        if current.contains(&key) {
+            return false;
+        }
+        if current.len() >= Self::LINEAR_MAX {
+            let mut set: HashSet<&[u8]> = current.iter().copied().collect();
+            set.insert(key);
+            self.keys.truncate(scope.start);
+            scope.set = Some(set);
+        } else {
+            self.keys.push(key);
+        }
+        true
+    }
+}
+
 /// Records `key` in the innermost scope and reports it if it was already defined there.
 #[inline(always)]
 fn check_duplicate<'r, D: Diagnostics>(
     diag: &mut D,
-    scopes: &mut [HashSet<&'r [u8]>],
+    scopes: &mut ScopeKeys<'r>,
     raw: &'r [u8],
     key: Range<usize>,
 ) {
     if !D::ENABLED {
         return;
     }
-    if let Some(scope) = scopes.last_mut()
-        && !scope.insert(&raw[key.clone()])
-    {
+    if !scopes.insert(&raw[key.clone()]) {
         let name = String::from_utf8_lossy(&raw[key.clone()]).into_owned();
         diag.report(ParseErrorKind::DuplicateKey(name), key);
     }
@@ -192,7 +263,7 @@ fn scan<D: Diagnostics>(raw: &[u8], diag: &mut D) -> Vec<u8> {
     // Name spans of currently open blocks; only tracked when diagnostics are enabled.
     let mut open_blocks: Vec<Range<usize>> = Vec::new();
     // Keys defined in each open scope (root first); only tracked when diagnostics are enabled.
-    let mut scopes: Vec<HashSet<&[u8]>> = if D::ENABLED { vec![HashSet::new()] } else { Vec::new() };
+    let mut scopes = ScopeKeys::new();
 
     'scan: while i < len {
         // 1. Vectorized / LUT whitespace skip and newline tracker
@@ -225,7 +296,7 @@ fn scan<D: Diagnostics>(raw: &[u8], diag: &mut D) -> Vec<u8> {
         if raw[i] == b'}' {
             if D::ENABLED {
                 if open_blocks.pop().is_some() {
-                    scopes.pop();
+                    scopes.close();
                 } else {
                     diag.report(ParseErrorKind::UnexpectedCloseBrace, i..i + 1);
                 }
@@ -253,7 +324,7 @@ fn scan<D: Diagnostics>(raw: &[u8], diag: &mut D) -> Vec<u8> {
             if i < len && raw[i] == b'{' {
                 if D::ENABLED {
                     open_blocks.push(start_name..start_name + name_len as usize);
-                    scopes.push(HashSet::new());
+                    scopes.open();
                 }
                 emit_block_start(&mut fields, name_off, name_len, line);
                 i += 1;
@@ -330,7 +401,7 @@ fn scan<D: Diagnostics>(raw: &[u8], diag: &mut D) -> Vec<u8> {
                 if probe < len && raw[probe] == b'{' {
                     if D::ENABLED {
                         open_blocks.push(start_name..start_name + name_len as usize);
-                        scopes.push(HashSet::new());
+                        scopes.open();
                     }
                     emit_block_start(&mut fields, name_off, name_len, line);
                     i = probe + 1;
@@ -374,7 +445,7 @@ fn scan<D: Diagnostics>(raw: &[u8], diag: &mut D) -> Vec<u8> {
             b'{' => {
                 if D::ENABLED {
                     open_blocks.push(key_start..key_start + key_len as usize);
-                    scopes.push(HashSet::new());
+                    scopes.open();
                 }
                 emit_block_start(&mut fields, key_off, key_len, line);
                 i += 1;

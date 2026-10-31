@@ -770,6 +770,17 @@ fn test_diagnostics_duplicate_keys() {
 }
 
 #[test]
+fn test_diagnostics_duplicate_keys_in_large_scopes() {
+    // Scopes past the linear-scan threshold switch to a hash set; detection must not change.
+    let keys: String = (0..40).map(|i| format!(" k{i}: {i}\n")).collect();
+    let src = format!("#big {{\n{keys} k3: dup\n k39: dup\n}}\nk3: top\n#next {{\n{keys}}}\n");
+    assert_eq!(
+        diagnostics(&src),
+        ["42:2: duplicate key `k3` in the same scope", "43:2: duplicate key `k39` in the same scope"]
+    );
+}
+
+#[test]
 fn test_strict_parse_api() {
     let t = Template::parse("@theme \"dark\"\n#btn { w: 10px }\n").expect("well-formed");
     assert_eq!(t.get_directive("theme"), Some("dark"));
