@@ -471,7 +471,23 @@ fn scan<D: Diagnostics>(raw: &[u8], diag: &mut D) -> Vec<u8> {
                     i += 1;
                 }
 
-                if raw[i..].starts_with(RAW_QUOTE) {
+                if i < len && raw[i] == b'"' && !raw[i..].starts_with(RAW_QUOTE) {
+                    let val_start = i + 1;
+                    if let Some((quote_end, newlines)) = scan_quoted(&raw[val_start..]) {
+                        let val_off = val_start as u32;
+                        let val_len = quote_end as u32;
+                        i = val_start + quote_end + 1;
+
+                        check_duplicate(diag, &mut scopes, raw, key_start..key_start + key_len as usize);
+                        emit_property(&mut fields, key_off, key_len, val_off, val_len, line);
+                        line += newlines;
+                    } else {
+                        let end = line_end(raw, val_start);
+                        diag.report(ParseErrorKind::UnterminatedString, val_start - 1..end);
+                        // Skip the rest of the line instead of re-reading the string body as keys.
+                        i = end;
+                    }
+                } else if i < len && raw[i] == b'"' {
                     // Raw multi-line string: """ ... """ (no escape processing)
                     let val_start = i + RAW_QUOTE.len();
                     if let Some(body_len) = memchr::memmem::find(&raw[val_start..], RAW_QUOTE) {
@@ -482,22 +498,6 @@ fn scan<D: Diagnostics>(raw: &[u8], diag: &mut D) -> Vec<u8> {
                     } else {
                         diag.report(ParseErrorKind::UnterminatedString, i..len);
                         i = len;
-                    }
-                } else if i < len && raw[i] == b'"' {
-                    let val_start = i + 1;
-                    if let Some(quote_end) = find_unescaped_quote(&raw[val_start..]) {
-                        let val_off = val_start as u32;
-                        let val_len = quote_end as u32;
-                        i = val_start + quote_end + 1;
-
-                        check_duplicate(diag, &mut scopes, raw, key_start..key_start + key_len as usize);
-                        emit_property(&mut fields, key_off, key_len, val_off, val_len, line);
-                        line += count_newlines(&raw[val_start..val_start + quote_end]);
-                    } else {
-                        let end = line_end(raw, val_start);
-                    diag.report(ParseErrorKind::UnterminatedString, val_start - 1..end);
-                    // Skip the rest of the line instead of re-reading the string body as keys.
-                    i = end;
                     }
                 } else {
                     let val_start = i;
@@ -765,6 +765,27 @@ fn emit_var_func(buf: &mut Vec<u8>, k_off: u32, k_len: u32, expr_off: u32, expr_
         std::ptr::copy_nonoverlapping(expr_len.to_le_bytes().as_ptr(), ptr.add(13), 4);
         buf.set_len(len + REC_BINDING);
     }
+}
+
+/// Finds the closing quote of a string body and counts the newlines inside it.
+///
+/// Values are usually short, so one byte loop does both jobs for the first 64 bytes;
+/// longer strings fall back to the SIMD searches.
+#[inline(always)]
+fn scan_quoted(body: &[u8]) -> Option<(usize, u32)> {
+    let mut newlines = 0;
+    let mut i = 0;
+    while i < body.len().min(64) {
+        match body[i] {
+            b'"' => return Some((i, newlines)),
+            b'\\' => i += 1,
+            b'\n' => newlines += 1,
+            _ => {}
+        }
+        i += 1;
+    }
+    let end = find_unescaped_quote(body)?;
+    Some((end, count_newlines(&body[..end])))
 }
 
 /// Counts `\n` bytes using SIMD acceleration, to keep line numbers accurate across
