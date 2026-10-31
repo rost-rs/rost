@@ -974,3 +974,15 @@ fn test_unterminated_list_at_eof_does_not_underflow() {
     }
     assert_eq!(Template::from_str("k [a").get("k").unwrap().list_items(), vec!["a"]);
 }
+
+#[test]
+fn test_path_index_tracks_patches() {
+    let mut t = Template::from_str("#audio {\n volume: 1\n name: \"a\"\n}\nafter: x\n");
+    assert_eq!(t.query_raw_value("audio.volume"), Some("1"));
+    // Same-length rewrite keeps offsets; a longer one re-indexes the whole document.
+    assert!(t.patch_value("audio.volume", "2"));
+    assert_eq!(t.query_raw_value("audio.volume"), Some("2"));
+    assert!(t.patch_value("audio.name", "a much longer name"));
+    assert_eq!(t.query_string("audio.name").as_deref(), Some("a much longer name"));
+    assert_eq!(t.query_raw_value("after"), Some("x"));
+}
