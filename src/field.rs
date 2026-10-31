@@ -168,6 +168,64 @@ fn parse_small_int(s: &str, max_digits: usize) -> Option<i64> {
     Some(if negative { -val } else { val })
 }
 
+/// Exact powers of ten representable in an `f64`.
+const POW10: [f64; 16] = [1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11, 1e12, 1e13, 1e14, 1e15];
+
+/// Parses a plain decimal `[-]digits[.digits]` with at most 15 significant digits.
+///
+/// Clinger's fast path: the digits and the power of ten are both exact in an `f64`, and a
+/// single IEEE division is correctly rounded, so the result equals the standard parser's.
+/// Anything else (exponents, units, surrounding whitespace, long mantissas) returns `None`.
+#[inline(always)]
+fn parse_plain_decimal(bytes: &[u8]) -> Option<f64> {
+    let (negative, digits) = match bytes.first()? {
+        b'-' => (true, &bytes[1..]),
+        _ => (false, bytes),
+    };
+    let mut mantissa: u64 = 0;
+    let mut count = 0usize;
+    let mut fraction: Option<usize> = None;
+    for &b in digits {
+        match b {
+            b'0'..=b'9' => {
+                mantissa = mantissa * 10 + u64::from(b - b'0');
+                count += 1;
+                if count > 15 {
+                    return None;
+                }
+            }
+            b'.' if fraction.is_none() => fraction = Some(count),
+            _ => return None,
+        }
+    }
+    if count == 0 {
+        return None;
+    }
+    let value = mantissa as f64 / POW10[count - fraction.unwrap_or(count)];
+    Some(if negative { -value } else { value })
+}
+
+/// Parses a plain decimal integer `[-]digits` of at most 18 digits (always fits `i64`).
+#[inline(always)]
+pub(crate) fn parse_plain_int(bytes: &[u8]) -> Option<i64> {
+    let (negative, digits) = match bytes.first()? {
+        b'-' => (true, &bytes[1..]),
+        _ => (false, bytes),
+    };
+    if digits.is_empty() || digits.len() > 18 {
+        return None;
+    }
+    let mut value: i64 = 0;
+    for &b in digits {
+        let d = b.wrapping_sub(b'0');
+        if d > 9 {
+            return None;
+        }
+        value = value * 10 + i64::from(d);
+    }
+    Some(if negative { -value } else { value })
+}
+
 /// Fast float parser extracting the numeric prefix without allocating strings.
 ///
 /// Integers that fit the `f32` mantissa take an exact fast path; everything else is
@@ -197,6 +255,9 @@ pub fn parse_fast_f32(raw: &str) -> Option<f32> {
 /// ```
 #[inline(always)]
 pub fn parse_fast_f64(raw: &str) -> Option<f64> {
+    if let Some(v) = parse_plain_decimal(raw.as_bytes()) {
+        return Some(v);
+    }
     let s = numeric_slice(raw);
     if let Some(i) = parse_small_int(s, 15) {
         return Some(i as f64);
@@ -686,5 +747,49 @@ impl<'a> Iterator for TopLevelSplit<'a> {
             }
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plain_decimal_fast_path_matches_std() {
+        let fixed = [
+            "0", "-0", "5.", ".5", "0.1", "0.3", "-25000.5", "123456789012345", "1.23456789012345",
+            "9007199254740.993", "0.000000000000001", "999999999999999",
+        ];
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let generated = (0..20_000).map(|_| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            let digits = format!("{}", state % 10u64.pow(1 + (state % 15) as u32));
+            let dot = (state >> 40) as usize % (digits.len() + 1);
+            let sign = if state & 1 == 0 { "" } else { "-" };
+            format!("{sign}{}.{}", &digits[..dot], &digits[dot..])
+        });
+        for s in fixed.iter().map(|s| s.to_string()).chain(generated) {
+            let expected = s.parse::<f64>().ok();
+            if let Some(fast) = parse_plain_decimal(s.as_bytes()) {
+                assert_eq!(Some(fast.to_bits()), expected.map(f64::to_bits), "{s}");
+            }
+            assert_eq!(parse_fast_f64(&s).map(f64::to_bits), expected.map(f64::to_bits), "{s}");
+        }
+        assert_eq!(parse_plain_decimal(b"1e3"), None);
+        assert_eq!(parse_plain_decimal(b"1234567890123456"), None);
+        assert_eq!(parse_plain_decimal(b"-"), None);
+    }
+
+    #[test]
+    fn plain_int_fast_path() {
+        assert_eq!(parse_plain_int(b"0"), Some(0));
+        assert_eq!(parse_plain_int(b"-42"), Some(-42));
+        assert_eq!(parse_plain_int(b"999999999999999999"), Some(999_999_999_999_999_999));
+        assert_eq!(parse_plain_int(b"9999999999999999999"), None);
+        assert_eq!(parse_plain_int(b"12px"), None);
+        assert_eq!(parse_plain_int(b"-"), None);
+        assert_eq!(parse_plain_int(b""), None);
     }
 }

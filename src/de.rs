@@ -35,7 +35,8 @@ fn strip_hash(s: &str) -> &str {
     s.strip_prefix('#').unwrap_or(s)
 }
 use super::field::{
-    parse_fast_f32, parse_fast_f64, parse_fast_u32, unescape, unquote, QuoteStyle, TopLevelSplit,
+    parse_fast_f32, parse_fast_f64, parse_fast_u32, parse_plain_int, unescape, unquote, QuoteStyle,
+    TopLevelSplit,
 };
 use std::borrow::Cow;
 
@@ -44,6 +45,9 @@ use std::borrow::Cow;
 /// Accepts decimal values with an optional unit suffix (`42`, `-7`, `120px`) and hex
 /// literals (`#ff0000`, `0xff`). Returns `None` when the value does not fit `T`.
 fn parse_integer<T: TryFrom<i128>>(value: &str) -> Option<T> {
+    if let Some(v) = parse_plain_int(value.as_bytes()) {
+        return T::try_from(i128::from(v)).ok();
+    }
     let raw = value.trim().trim_end_matches(';');
     if raw.starts_with('#') || raw.starts_with("0x") || raw.starts_with("0X") {
         return parse_fast_u32(raw).and_then(|v| T::try_from(v as i128).ok());
@@ -69,6 +73,18 @@ macro_rules! deserialize_integers {
     )*};
 }
 
+/// Trims a bare value; values from the lexers are already trimmed, so the common case
+/// (plain ASCII at both ends) returns immediately.
+#[inline(always)]
+fn trim_bare(value: &str) -> &str {
+    let plain = |b: u8| b.is_ascii_graphic() && b != b';' && b != b'"';
+    match value.as_bytes() {
+        [first, .., last] if plain(*first) && plain(*last) => value,
+        [only] if plain(*only) => value,
+        _ => value.trim().trim_end_matches(';').trim_matches('"'),
+    }
+}
+
 pub(crate) struct FieldDeserializer<'a> {
     pub(crate) name: &'a str,
     pub(crate) value: &'a str,
@@ -82,7 +98,7 @@ impl<'a> FieldDeserializer<'a> {
         match self.quote {
             QuoteStyle::Quoted => unescape(self.value),
             QuoteStyle::Raw => Cow::Borrowed(self.value),
-            QuoteStyle::Bare => Cow::Borrowed(self.value.trim().trim_end_matches(';').trim_matches('"')),
+            QuoteStyle::Bare => Cow::Borrowed(trim_bare(self.value)),
         }
     }
 
