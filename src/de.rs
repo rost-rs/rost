@@ -35,11 +35,32 @@ impl de::Error for DeError {
 fn strip_hash(s: &str) -> &str {
     s.strip_prefix('#').unwrap_or(s)
 }
-use super::field::{parse_fast_f32, parse_fast_u32};
+use super::field::{parse_fast_f32, parse_fast_u32, unescape, QuoteStyle};
+use std::borrow::Cow;
 
 struct FieldDeserializer<'a> {
     name: &'a str,
     value: &'a str,
+    quote: QuoteStyle,
+}
+
+impl<'a> FieldDeserializer<'a> {
+    /// The value as a string: escapes decoded for quoted values, verbatim for raw ones,
+    /// trimmed for bare tokens.
+    fn text(&self) -> Cow<'a, str> {
+        match self.quote {
+            QuoteStyle::Quoted => unescape(self.value),
+            QuoteStyle::Raw => Cow::Borrowed(self.value),
+            QuoteStyle::Bare => Cow::Borrowed(self.value.trim().trim_end_matches(';').trim_matches('"')),
+        }
+    }
+
+    fn visit_text<'de, V: Visitor<'de>>(&self, visitor: V) -> Result<V::Value, DeError> {
+        match self.text() {
+            Cow::Borrowed(s) => visitor.visit_str(s),
+            Cow::Owned(s) => visitor.visit_string(s),
+        }
+    }
 }
 
 impl<'de, 'a> Deserializer<'de> for FieldDeserializer<'a> {
@@ -47,6 +68,12 @@ impl<'de, 'a> Deserializer<'de> for FieldDeserializer<'a> {
 
     #[inline]
     fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
+        if self.quote != QuoteStyle::Bare {
+            return self.visit_text(visitor);
+        }
+        if self.value.trim() == "null" {
+            return visitor.visit_unit();
+        }
         if let Some(u) = parse_fast_u32(self.value) {
             return visitor.visit_u32(u);
         }
@@ -129,18 +156,19 @@ impl<'de, 'a> Deserializer<'de> for FieldDeserializer<'a> {
 
     #[inline]
     fn deserialize_str<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
-        let s = self.value.trim().trim_end_matches(';').trim_matches('"');
-        visitor.visit_str(s)
+        self.visit_text(visitor)
     }
 
     #[inline]
     fn deserialize_string<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
-        let s = self.value.trim().trim_end_matches(';').trim_matches('"');
-        visitor.visit_string(s.to_string())
+        visitor.visit_string(self.text().into_owned())
     }
 
     #[inline]
     fn deserialize_option<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
+        if self.quote == QuoteStyle::Bare && self.value.trim() == "null" {
+            return visitor.visit_none();
+        }
         visitor.visit_some(self)
     }
 
@@ -271,7 +299,7 @@ struct BlockStreamDeserializer<'a, 's> {
 }
 
 enum StreamEntry<'a> {
-    Field { name: &'a str, val: &'a str },
+    Field { name: &'a str, val: &'a str, quote: QuoteStyle },
     SubBlock,
     List { raw: &'a str },
     Enum { raw: &'a str },
@@ -316,8 +344,13 @@ impl<'de, 'a, 's> MapAccess<'de> for BlockMapStreamAccess<'a, 's> {
                 TAG_COMMON_TEXT => {
                     let key = resolve_slice(self.stream.data, self.stream.bytes, self.stream.idx + 1);
                     let val = resolve_slice(self.stream.data, self.stream.bytes, self.stream.idx + 9);
+                    let quote = QuoteStyle::detect(
+                        self.stream.data,
+                        read_u32(self.stream.bytes, self.stream.idx + 9) as usize,
+                        val.len(),
+                    );
                     self.stream.idx += 21;
-                    self.current_entry = Some(StreamEntry::Field { name: key, val });
+                    self.current_entry = Some(StreamEntry::Field { name: key, val, quote });
                     return seed.deserialize(key.into_deserializer()).map(Some);
                 }
                 TAG_BLOCK_START => {
@@ -364,8 +397,8 @@ impl<'de, 'a, 's> MapAccess<'de> for BlockMapStreamAccess<'a, 's> {
 
     fn next_value_seed<V: DeserializeSeed<'de>>(&mut self, seed: V) -> Result<V::Value, Self::Error> {
         match self.current_entry.take().ok_or_else(|| DeError("missing stream entry".into()))? {
-            StreamEntry::Field { name, val } => {
-                seed.deserialize(FieldDeserializer { name, value: val })
+            StreamEntry::Field { name, val, quote } => {
+                seed.deserialize(FieldDeserializer { name, value: val, quote })
             }
             StreamEntry::SubBlock { .. } => {
                 seed.deserialize(BlockStreamDeserializer { stream: self.stream })
@@ -424,7 +457,8 @@ impl<'de, 'a> MapAccess<'de> for BlockViewDeserializer<'a> {
         let f = &self.block.fields[self.idx];
         self.idx += 1;
         let val = f.value().unwrap_or("");
-        seed.deserialize(FieldDeserializer { name: f.name(), value: val })
+        let quote = f.quote_style().unwrap_or_default();
+        seed.deserialize(FieldDeserializer { name: f.name(), value: val, quote })
     }
 }
 

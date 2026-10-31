@@ -654,3 +654,65 @@ fn test_from_template_reads_top_level_properties() {
         App { name: "rost".into(), volume: 0.5, tags: vec!["a".into(), "b".into()], window: Window { width: 800 } }
     );
 }
+
+#[cfg(feature = "serde")]
+#[test]
+fn test_serde_honours_quoting_escapes_and_null() {
+    use serde::Deserialize;
+    use std::collections::HashMap;
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct Msg {
+        text: String,
+        raw: String,
+        nick: Option<String>,
+        code: String,
+    }
+
+    let src = "#m {\n text: \"a\\tb \\\"c\\\"\"\n raw: \"\"\"x\\ny\"\"\"\n nick: null\n code: \"007\"\n}\n";
+    let t = Template::parse(src).unwrap();
+    let m: Msg = t.deserialize("m").expect("deserialize");
+    assert_eq!(m, Msg { text: "a\tb \"c\"".into(), raw: "x\\ny".into(), nick: None, code: "007".into() });
+
+    // Untyped maps keep quoted numbers as strings.
+    let any: HashMap<String, serde_value_like::Value> = t.deserialize("m").unwrap();
+    assert_eq!(any["code"], serde_value_like::Value::Str("007".into()));
+
+    let blocks = t.blocks();
+    let via_block: Msg = rost::from_block(&blocks[0]).unwrap();
+    assert_eq!(via_block.text, "a\tb \"c\"");
+}
+
+/// Minimal self-describing value used to observe what `deserialize_any` produces.
+#[cfg(feature = "serde")]
+mod serde_value_like {
+    use serde::de::{Deserialize, Deserializer, Visitor};
+
+    #[derive(Debug, PartialEq)]
+    pub enum Value {
+        Num,
+        Str(String),
+        Other,
+    }
+
+    impl<'de> Deserialize<'de> for Value {
+        fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+            struct V;
+            impl<'de> Visitor<'de> for V {
+                type Value = Value;
+                fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                    f.write_str("any value")
+                }
+                fn visit_u32<E>(self, _: u32) -> Result<Value, E> { Ok(Value::Num) }
+                fn visit_u64<E>(self, _: u64) -> Result<Value, E> { Ok(Value::Num) }
+                fn visit_f32<E>(self, _: f32) -> Result<Value, E> { Ok(Value::Num) }
+                fn visit_f64<E>(self, _: f64) -> Result<Value, E> { Ok(Value::Num) }
+                fn visit_str<E>(self, s: &str) -> Result<Value, E> { Ok(Value::Str(s.into())) }
+                fn visit_string<E>(self, s: String) -> Result<Value, E> { Ok(Value::Str(s)) }
+                fn visit_unit<E>(self) -> Result<Value, E> { Ok(Value::Other) }
+                fn visit_bool<E>(self, _: bool) -> Result<Value, E> { Ok(Value::Other) }
+            }
+            d.deserialize_any(V)
+        }
+    }
+}
