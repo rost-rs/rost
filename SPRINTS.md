@@ -74,25 +74,32 @@ model is fixed and covered by a regression test.
 regressions introduced by the correctness work, and change the architecture where the
 two-pass design (index, then walk) cannot win.
 
-Targets, against `serde_json` on equivalent data on the same machine:
+Targets, against `serde_json` on equivalent data on the same machine (50k records,
+i7-13650HX, pinned to one core; `cargo bench --features serde --bench compare`):
 
-| Workload | Sprint 2 | Target |
-|---|---|---|
-| 5 MB document → typed structs | 1.5× slower | faster than `serde_json` |
-| Small config → struct | 2.3× slower | faster than `serde_json` |
-| Lookup by dot path | O(n), 274 µs mid-document | O(1) after the first query |
-| Strict parse vs lenient | 2.4× | ≤ 1.5× |
-| Lenient indexing | 7.4 ms (regressed) | ≤ develop baseline (5.9 ms) |
+| Workload | Sprint 2 | Target | Sprint 3 result |
+|---|---|---|---|
+| 5 MB document → typed structs | 1.5× slower | faster than `serde_json` | **on par**: 1.00–1.08× vs one-record-per-line JSON, **0.90–0.94×** vs JSON with the same layout (rost file 30% smaller) |
+| Small config → struct | 2.3× slower | faster than `serde_json` | **on par**: 0.97–1.06× vs compact JSON, **0.88×** vs pretty JSON |
+| Lookup by dot path | O(n), 274 µs mid-document | O(1) after the first query | ✅ **60 ns** after a one-time ~3 ms index build (`serde_json::Value`: 84 ns after a 44 ms DOM build) |
+| Strict parse vs lenient | 2.4× | ≤ 1.5× | ✅ **1.2–1.3×** (15.9 ms → 7.3 ms) |
+| Lenient indexing | regressed | ≤ develop baseline | ✅ **17.2M vs 16.8M cycles** per parse (develop), within noise |
 
-- [ ] In-repo reproducible comparison benchmark (`cargo bench --bench compare`) vs `serde_json` and `toml`
-- [ ] Recover the Sprint 1 indexing regression
-- [ ] Strict duplicate-key tracking without per-block hash sets
-- [ ] Lazy path index: O(1) `query_*` after the first lookup
-- [ ] Single-pass serde deserializer straight from text: `rost::from_str` / `from_slice`
-- [ ] Zero-copy borrowed strings (`&'de str`) in the single-pass deserializer
-- [ ] Results table in README
+- [x] In-repo reproducible comparison benchmark (`cargo bench --bench compare`) vs `serde_json` and `toml`
+- [x] Recover the Sprint 1 indexing regression
+- [x] Strict duplicate-key tracking without per-block hash sets
+- [x] Lazy path index: O(1) `query_*` after the first lookup
+- [x] Single-pass serde deserializer straight from text: `rost::from_str` / `from_slice`
+- [x] Zero-copy borrowed strings (`&'de str`) in the single-pass deserializer (and in `from_template`)
+- [x] Results table in README
 
 **Done when:** every target in the table is met and reproducible with `cargo bench`.
+
+> Typed loading reached parity rather than a clear lead: half of that workload is
+> `HashMap` hashing and `String` allocation, identical for both crates, and the scanners
+> now execute fewer instructions than `serde_json`'s. Branch-free SIMD / table scans were
+> measured and rejected (the parse is a dependency chain through the position, where
+> predicted byte loops win). Explicit SIMD for long runs moves to Sprint 5.
 
 ## Sprint 4 — Serde, first class (the drop-in experience)
 
@@ -100,7 +107,7 @@ Targets, against `serde_json` on equivalent data on the same machine:
 
 - [ ] `rost::from_reader` and API parity with `serde_json` (`from_str` / `from_slice` land in Sprint 3)
 - [ ] Serializer: `rost::to_string`, `to_string_pretty`, `to_writer`, `to_vec`
-- [ ] Zero-copy borrowing (`&'de str`, `Cow<'de, str>`) straight from the buffer
+- [x] Zero-copy borrowing (`&'de str`, `Cow<'de, str>`) straight from the buffer (done in Sprint 3)
 - [ ] Enums (unit / newtype / tuple / struct variants), `Option`, `#[serde(default)]`, `flatten`, `rename`
 - [ ] Nested structs ↔ nested blocks, `Vec<Struct>` ↔ list of blocks, `HashMap` ↔ block
 - [ ] `rost::Value` dynamic tree + `rost!{}` literal macro (like `json!`)
@@ -117,7 +124,8 @@ Targets, against `serde_json` on equivalent data on the same machine:
 - [ ] Pass the JSONTestSuite conformance cases in JSON mode
 - [ ] Extend the Sprint 3 benchmark to `simd-json`, `sonic-rs`, `lightningcss`
 - [ ] Larger benchmark corpus (real configs, themes, datasets)
-- [ ] Profile-driven parser optimizations (explicit SIMD for structural chars where it wins)
+- [ ] Profile-driven parser optimizations (explicit SIMD for long runs: strings, comments, indentation)
+- [ ] Typed loading clearly ahead of `serde_json` on compact layouts (Sprint 3 reached parity)
 - [ ] CI job that fails on performance regressions
 
 **Done when:** README shows reproducible numbers where `rost` leads or ties in its target workloads.
