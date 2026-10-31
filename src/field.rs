@@ -229,6 +229,28 @@ pub fn parse_fast_f32(raw: &str) -> Option<f32> {
     Some(res)
 }
 
+/// How a property value was written in the source document.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum QuoteStyle {
+    /// Unquoted token (`width: 120px`); typed as number, color, dimension, bool, … on demand.
+    #[default]
+    Bare,
+    /// Double-quoted string (`title: "Hello"`); always a string, escapes apply.
+    Quoted,
+}
+
+impl QuoteStyle {
+    /// Classifies the value slice `data[off..off + len]` by inspecting its delimiters.
+    #[inline]
+    pub(crate) fn detect(data: &[u8], off: usize, len: usize) -> Self {
+        if off >= 1 && data.get(off - 1) == Some(&b'"') && data.get(off + len) == Some(&b'"') {
+            Self::Quoted
+        } else {
+            Self::Bare
+        }
+    }
+}
+
 /// Represents an individual field or syntactic node extracted from a `.rost` document.
 ///
 /// Designed with zero allocations in mind: each field borrows its textual content
@@ -249,8 +271,11 @@ pub enum ParsedField<'a> {
     /// Common property or key-value pair defined with `:` (e.g., `width: 120px` or `color: "#ffffff"`).
     CommonText {
         name: &'a str,
+        /// Value without its surrounding quotes, if any.
         value: &'a str,
         line: u32,
+        /// How the value was written in the source.
+        quote: QuoteStyle,
     },
     /// Enumerated variants or state sets enclosed in pipes `| ... |` (e.g., `state | idle, hover, active |`).
     Enum {
@@ -289,6 +314,15 @@ pub enum ParsedField<'a> {
 }
 
 impl<'a> ParsedField<'a> {
+    /// Returns how the value of a [`ParsedField::CommonText`] was written, if this is one.
+    #[inline]
+    pub fn quote_style(&self) -> Option<QuoteStyle> {
+        match self {
+            ParsedField::CommonText { quote, .. } => Some(*quote),
+            _ => None,
+        }
+    }
+
     /// Returns the primary identifier or key name of the field.
     #[inline]
     pub fn name(&self) -> &'a str {

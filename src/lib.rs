@@ -97,7 +97,7 @@ pub mod object;
 pub mod de;
 
 pub use error::{ParseError, ParseErrorKind};
-pub use field::{Dimension, ParsedField};
+pub use field::{Dimension, ParsedField, QuoteStyle};
 pub use malleable::{MalleablePatcher, RostBuilder};
 pub use query::{parse_blocks, BlockView, FieldIter};
 pub use watcher::{CentralWatcher, HotReloadWatcher, ReloadCallback};

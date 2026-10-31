@@ -550,3 +550,13 @@ fn test_strict_parse_api() {
     // Lenient parsing still accepts the same input.
     assert_eq!(Template::parse_lenient("#a {\n x: 1\n").query_i64("a.x"), Some(1));
 }
+
+#[test]
+fn test_quote_style_is_recorded() {
+    use rost::QuoteStyle;
+    let t = Template::parse("a: 120px\nb: \"120px\"\nc: \"\"\n").unwrap();
+    assert_eq!(t.get("a").unwrap().quote_style(), Some(QuoteStyle::Bare));
+    assert_eq!(t.get("b").unwrap().quote_style(), Some(QuoteStyle::Quoted));
+    assert_eq!(t.get("c").unwrap().quote_style(), Some(QuoteStyle::Quoted));
+    assert_eq!(t.get("c").unwrap().value(), Some(""));
+}
