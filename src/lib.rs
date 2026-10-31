@@ -84,6 +84,7 @@
 
 extern crate self as utilrs_rost;
 
+pub mod error;
 pub mod field;
 pub mod malleable;
 pub mod parser;
@@ -95,6 +96,7 @@ pub mod object;
 #[cfg(feature = "serde")]
 pub mod de;
 
+pub use error::{ParseError, ParseErrorKind};
 pub use field::{Dimension, ParsedField};
 pub use malleable::{MalleablePatcher, RostBuilder};
 pub use query::{parse_blocks, BlockView, FieldIter};
