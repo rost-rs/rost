@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
@@ -23,7 +23,9 @@ struct FileWatchState {
     last_modified: SystemTime,
     subscribers: Vec<Sender<Template>>,
     callbacks: Vec<ReloadCallback>,
-    latest_reloaded: Option<Template>,
+    /// Latest unconsumed reload per live handle, keyed by handle id. Its length is the
+    /// number of live [`HotReloadWatcher`] handles for this file.
+    pending: HashMap<u64, Option<Template>>,
 }
 
 /// Centralized manager that monitors multiple `.rost` documents using a single shared thread.
@@ -103,7 +105,9 @@ impl CentralWatcher {
                 let Some(new_template) = &reloaded else {
                     continue;
                 };
-                state.latest_reloaded = Some(new_template.clone());
+                for slot in state.pending.values_mut() {
+                    *slot = Some(new_template.clone());
+                }
                 // Channel sends never block or run user code, so they stay under the lock.
                 state
                     .subscribers
@@ -135,6 +139,9 @@ impl CentralWatcher {
             .and_then(|m| m.modified())
             .unwrap_or(SystemTime::UNIX_EPOCH);
 
+        static NEXT_HANDLE_ID: AtomicU64 = AtomicU64::new(0);
+        let id = NEXT_HANDLE_ID.fetch_add(1, Ordering::Relaxed);
+
         if let Ok(mut files) = self.files.lock() {
             files
                 .entry(canonical.clone())
@@ -142,11 +149,13 @@ impl CentralWatcher {
                     last_modified,
                     subscribers: Vec::new(),
                     callbacks: Vec::new(),
-                    latest_reloaded: None,
-                });
+                    pending: HashMap::new(),
+                })
+                .pending
+                .insert(id, None);
         }
 
-        Ok(Arc::new(HotReloadWatcher { path: canonical }))
+        Ok(Arc::new(HotReloadWatcher { path: canonical, id }))
     }
 
     /// Returns the number of distinct `.rost` files currently monitored.
@@ -158,12 +167,14 @@ impl CentralWatcher {
 /// A lightweight handle to a specific monitored file managed by [`CentralWatcher`].
 pub struct HotReloadWatcher {
     path: PathBuf,
+    id: u64,
 }
 
 impl std::fmt::Debug for HotReloadWatcher {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HotReloadWatcher")
             .field("path", &self.path)
+            .field("id", &self.id)
             .finish()
     }
 }
@@ -197,11 +208,14 @@ impl HotReloadWatcher {
         }
     }
 
-    /// Takes the latest reloaded template if an update occurred since the last check.
+    /// Takes the latest reloaded template if an update occurred since this handle's last check.
+    ///
+    /// Every handle has its own slot, so handles watching the same file never steal each
+    /// other's updates.
     pub fn check_reload(&self) -> Option<Template> {
         if let Ok(mut files) = CentralWatcher::global().files.lock() {
             if let Some(state) = files.get_mut(&self.path) {
-                return state.latest_reloaded.take();
+                return state.pending.get_mut(&self.id).and_then(Option::take);
             }
         }
         None
@@ -212,7 +226,8 @@ impl Drop for HotReloadWatcher {
     fn drop(&mut self) {
         if let Ok(mut files) = CentralWatcher::global().files.lock() {
             if let Some(state) = files.get_mut(&self.path) {
-                if state.subscribers.is_empty() && state.callbacks.is_empty() {
+                state.pending.remove(&self.id);
+                if state.pending.is_empty() && state.subscribers.is_empty() && state.callbacks.is_empty() {
                     files.remove(&self.path);
                 }
             }

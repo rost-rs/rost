@@ -673,3 +673,30 @@ fn test_reload_callback_can_reenter_watcher() {
     assert!(count >= 1);
     let _ = std::fs::remove_file(&path);
 }
+
+#[test]
+fn test_watcher_handles_do_not_steal_reloads() {
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    let path = std::env::temp_dir().join(format!("rost_shared_handles_{}.rost", std::process::id()));
+    std::fs::write(&path, "v: 1\n").unwrap();
+    let mut a = Template::load_with_options(&path, true).expect("load a");
+    let mut b = Template::load_with_options(&path, true).expect("load b");
+    let c = Template::load_with_options(&path, true).expect("load c");
+    // Dropping one handle must not unregister the file for the others.
+    drop(c);
+
+    touch_future(&path, "v: 2\n");
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let (mut got_a, mut got_b) = (false, false);
+    while !(got_a && got_b) && Instant::now() < deadline {
+        got_a |= a.check_reload();
+        got_b |= b.check_reload();
+        thread::sleep(Duration::from_millis(20));
+    }
+    assert!(got_a && got_b, "both handles must observe the reload");
+    assert_eq!(a.query_i64("v"), Some(2));
+    assert_eq!(b.query_i64("v"), Some(2));
+    let _ = std::fs::remove_file(&path);
+}
