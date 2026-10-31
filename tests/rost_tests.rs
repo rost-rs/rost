@@ -561,3 +561,19 @@ fn test_serde_numbers_are_not_narrowed() {
     let tmpl = Template::from_str("#t { v: 0xff }");
     assert_eq!(tmpl.deserialize::<Tiny>("t").expect("hex u8").v, 0xff);
 }
+
+#[test]
+fn test_unquoted_values_keep_nested_commas() {
+    let t = Template::from_str(
+        "color: rgba(1, 2, 3)\nshadow: drop(0 1px, [a, b]), next: 1\nfont: url(\"a,b\")\n#btn { bg: hsl(10, 20%, 30%), w: 4px }\n",
+    );
+    assert_eq!(t.get_value("color"), Some("rgba(1, 2, 3)"));
+    assert_eq!(t.get_value("shadow"), Some("drop(0 1px, [a, b])"));
+    assert_eq!(t.get_value("next"), Some("1"));
+    assert_eq!(t.get_value("font"), Some("url(\"a,b\")"));
+    assert_eq!(t.query_str("btn.bg"), Some("hsl(10, 20%, 30%)"));
+    assert_eq!(t.query_str("btn.w"), Some("4px"));
+    // An unbalanced parenthesis must not swallow the following lines.
+    let t = Template::from_str("a: f(1, 2\nb: 2\n");
+    assert_eq!(t.get_value("b"), Some("2"));
+}

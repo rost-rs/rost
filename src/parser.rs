@@ -282,8 +282,7 @@ pub fn parse_into_bytecode(raw: &[u8]) -> Vec<u8> {
                 } else {
                     let val_start = i;
                     // SIMD accelerated search for next property delimiter (\n, ,, })
-                    let (val_end, next_i) = if let Some(pos) = memchr3(b'\n', b',', b'}', &raw[i..]) {
-                        let delim_pos = i + pos;
+                    let (val_end, next_i) = if let Some(delim_pos) = find_value_end(raw, i) {
                         let delim = raw[delim_pos];
                         if delim == b'\n' {
                             line += 1;
@@ -570,6 +569,40 @@ pub(crate) fn resolve_slice<'a>(data: &'a [u8], fields: &[u8], idx: usize) -> &'
         return "";
     }
     unsafe { std::str::from_utf8_unchecked(&data[off..off + len]) }
+}
+
+/// Finds the delimiter (`\n`, `,` or `}`) that ends an unquoted value starting at `start`.
+///
+/// Commas and braces nested inside `(...)`, `[...]` or quoted strings belong to the value
+/// (`rgba(1, 2, 3)`, `url("a,b")`); a newline always terminates it. Returns the absolute
+/// position of the delimiter, or `None` if the value runs to the end of the buffer.
+#[inline(always)]
+fn find_value_end(raw: &[u8], start: usize) -> Option<usize> {
+    let candidate = memchr3(b'\n', b',', b'}', &raw[start..]).map(|p| start + p);
+    let scan_end = candidate.unwrap_or(raw.len());
+    // Fast path: nothing that could nest a delimiter appears before the candidate.
+    let nested = match memchr3(b'(', b'[', b'"', &raw[start..scan_end]) {
+        Some(p) => start + p,
+        None => return candidate,
+    };
+
+    let mut depth: u32 = 0;
+    let mut i = nested;
+    while i < raw.len() {
+        match raw[i] {
+            b'(' | b'[' => depth += 1,
+            b')' | b']' => depth = depth.saturating_sub(1),
+            b'"' => match find_unescaped_quote(&raw[i + 1..]) {
+                Some(end) if memchr(b'\n', &raw[i + 1..i + 1 + end]).is_none() => i += end + 1,
+                _ => {}
+            },
+            b'\n' => return Some(i),
+            b',' | b'}' if depth == 0 => return Some(i),
+            _ => {}
+        }
+        i += 1;
+    }
+    None
 }
 
 /// Finds the next unescaped quotation mark `"` using SIMD acceleration.
