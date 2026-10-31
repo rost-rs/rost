@@ -373,23 +373,28 @@ fn scan<D: Diagnostics>(raw: &[u8], diag: &mut D) -> Vec<u8> {
             let name_len = (i - start_name) as u32;
 
             if is_sub {
-                // Secondary section header: ##name "value"
-                if let Some(quote_start) = memchr(b'"', &raw[i..]) {
-                    let val_start = i + quote_start + 1;
+                // Secondary section header: ##name "value". The value is optional and must
+                // follow on the same line; a quote further ahead belongs to other entries.
+                while i < len && (raw[i] == b' ' || raw[i] == b'\t') {
+                    i += 1;
+                }
+                if i < len && raw[i] == b'"' {
+                    let val_start = i + 1;
                     if let Some(quote_end) = find_unescaped_quote(&raw[val_start..]) {
                         let val_off = val_start as u32;
                         let val_len = quote_end as u32;
-                        line += count_newlines(&raw[i..val_start]);
                         i = val_start + quote_end + 1;
 
                         emit_subtitle(&mut fields, name_off, name_len, val_off, val_len, line);
                         line += count_newlines(&raw[val_start..val_start + quote_end]);
                     } else {
                         let end = line_end(raw, val_start);
-                    diag.report(ParseErrorKind::UnterminatedString, val_start - 1..end);
-                    // Skip the rest of the line instead of re-reading the string body as keys.
-                    i = end;
+                        diag.report(ParseErrorKind::UnterminatedString, val_start - 1..end);
+                        // Skip the rest of the line instead of re-reading the string body as keys.
+                        i = end;
                     }
+                } else {
+                    emit_subtitle(&mut fields, name_off, name_len, i as u32, 0, line);
                 }
             } else {
                 // Check if followed by '{' opening a block selector

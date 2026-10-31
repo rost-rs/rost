@@ -591,12 +591,12 @@ fn test_list_and_enum_splitting_respects_quotes_and_nesting() {
 #[test]
 fn test_line_numbers_survive_multiline_strings() {
     let t = Template::from_str(
-        "a: \"one\ntwo\"\n@doc \"x\ny\"\n##sub\n\"p\nq\"\nb: 1\n",
+        "a: \"one\ntwo\"\n@doc \"x\ny\"\n##sub \"p\nq\"\nb: 1\n",
     );
     assert_eq!(t.get("a").unwrap().line(), 1);
     assert_eq!(t.get("doc").unwrap().line(), 3);
-    assert_eq!(t.get("sub").unwrap().line(), 6);
-    assert_eq!(t.get("b").unwrap().line(), 8);
+    assert_eq!(t.get("sub").unwrap().line(), 5);
+    assert_eq!(t.get("b").unwrap().line(), 7);
 
     let t = Template::from_str("x: 1\ny: 2\n");
     assert_eq!(t.get("x").unwrap().line(), 1);
@@ -1046,4 +1046,17 @@ fn test_serde_list_items_are_typed() {
             maybe: vec![None, Some(-4)],
         }
     );
+}
+
+#[test]
+fn test_subtitle_does_not_swallow_the_next_line() {
+    // `##Section` without a value used to take the next quoted string in the document,
+    // silently dropping the property that owned it.
+    let t = Template::parse("##Section\nname: \"Valkyrie\"\n").unwrap();
+    assert_eq!(t.query_str("name"), Some("Valkyrie"));
+    assert_eq!(t.get("Section").and_then(|f| f.value()), Some(""));
+
+    let t = Template::parse("##state \"hover\"\n").unwrap();
+    assert_eq!(t.get("state").and_then(|f| f.value()), Some("hover"));
+    assert!(Template::parse("##s x\"v\"\n").is_err());
 }
