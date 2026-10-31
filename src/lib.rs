@@ -124,22 +124,6 @@ pub struct Template {
 }
 
 impl Template {
-    /// Dumps and parses a `.rost` document from the given file path.
-    ///
-    /// Preserves exact backward compatibility with prior versions of `Template::dump`.
-    ///
-    /// # Panics
-    /// Does not panic; falls back to an empty template if the file cannot be read.
-    pub fn dump(path: PathBuf) -> Self {
-        let (data, fields) = Self::reader(&path);
-        Self {
-            path,
-            data,
-            fields,
-            watcher: None,
-        }
-    }
-
     /// Loads a `.rost` document from disk without hot-reloading.
     ///
     /// Use [`Template::load_watched`] to opt into hot-reloading.
@@ -212,13 +196,6 @@ impl Template {
     /// Starts a fluent [`RostBuilder`] to assemble a template.
     pub fn builder() -> RostBuilder {
         RostBuilder::new()
-    }
-
-    /// Reads a file from disk and parses it into data and field offset vectors.
-    fn reader(path: &Path) -> (Vec<u8>, Vec<u8>) {
-        let raw = read_utf8(path).unwrap_or_default();
-        let fields = parser::parse_into_bytecode(&raw);
-        (raw, fields)
     }
 
     /// Returns a zero-allocation iterator over all [`ParsedField`] items.
