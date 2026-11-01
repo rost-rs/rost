@@ -4,7 +4,7 @@
 //! for `.rost` documents. It transforms arbitrary `.rost` text into a compact
 //! binary offset arena (`Vec<u8>`) at sustained throughputs exceeding 500 MB/s.
 
-use memchr::{memchr, memchr2};
+use memchr::{memchr, memchr2, memchr3};
 use std::collections::HashSet;
 use std::ops::Range;
 
@@ -992,7 +992,9 @@ fn quoted_key_end(raw: &[u8], start: usize) -> Option<usize> {
 pub(crate) fn find_list_end(raw: &[u8], start: usize) -> Option<usize> {
     let mut depth = 1u32;
     let mut i = start;
-    while i < raw.len() {
+    // Only brackets and quotes matter: jump between them instead of walking every byte.
+    while let Some(skip) = memchr3(b'[', b']', b'"', &raw[i.min(raw.len())..]) {
+        i += skip;
         match raw[i] {
             b'[' => depth += 1,
             b']' => {
