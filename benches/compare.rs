@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use rost::Template;
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, serde::Serialize)]
 #[allow(dead_code)]
 struct Item {
     id: u32,
@@ -24,7 +24,7 @@ struct Item {
     color: String,
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, serde::Serialize)]
 #[allow(dead_code)]
 struct Config {
     title: String,
@@ -33,7 +33,7 @@ struct Config {
     window: Window,
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, serde::Serialize)]
 #[allow(dead_code)]
 struct Window {
     width: u32,
@@ -190,6 +190,68 @@ fn main() {
     });
     row(small, "toml", per_op(d, LOADS));
 
+    let tree = "Large document → dynamic tree (`Value`)";
+    let d = median(9, || {
+        black_box(rost::from_str::<rost::Value>(black_box(&rost_src)).unwrap());
+    });
+    row(tree, "**rost::Value**", throughput(rost_src.len(), d));
+    let d = median(9, || {
+        black_box(serde_json::from_str::<serde_json::Value>(black_box(&json_src)).unwrap());
+    });
+    row(tree, "serde_json::Value (one record per line)", throughput(json_src.len(), d));
+    let d = median(9, || {
+        black_box(serde_json::from_str::<serde_json::Value>(black_box(&json_pretty)).unwrap());
+    });
+    row(tree, "serde_json::Value (pretty, same layout as rost)", throughput(json_pretty.len(), d));
+    let d = median(5, || {
+        black_box(toml::from_str::<toml::Table>(black_box(&toml_src)).unwrap());
+    });
+    row(tree, "toml::Table", throughput(toml_src.len(), d));
+
+    let write = "Serialize `HashMap<String, Item>`";
+    let items: HashMap<String, Item> = serde_json::from_str(&json_src).unwrap();
+    let d = median(9, || {
+        black_box(rost::to_string(black_box(&items)).unwrap());
+    });
+    row(write, "**rost::to_string**", throughput(rost::to_string(&items).unwrap().len(), d));
+    let d = median(9, || {
+        black_box(rost::to_string_pretty(black_box(&items)).unwrap());
+    });
+    row(write, "**rost::to_string_pretty**", throughput(rost::to_string_pretty(&items).unwrap().len(), d));
+    let d = median(9, || {
+        black_box(serde_json::to_string(black_box(&items)).unwrap());
+    });
+    row(write, "serde_json::to_string", throughput(serde_json::to_string(&items).unwrap().len(), d));
+    let d = median(9, || {
+        black_box(serde_json::to_string_pretty(black_box(&items)).unwrap());
+    });
+    row(write, "serde_json::to_string_pretty", throughput(serde_json::to_string_pretty(&items).unwrap().len(), d));
+    let d = median(5, || {
+        black_box(toml::to_string(black_box(&items)).unwrap());
+    });
+    row(write, "toml::to_string", throughput(toml::to_string(&items).unwrap().len(), d));
+
+    let write_small = "Serialize small config (per call)";
+    let config: Config = serde_json::from_str(JSON_CONFIG).unwrap();
+    let d = median(15, || {
+        for _ in 0..LOADS {
+            black_box(rost::to_string_pretty(black_box(&config)).unwrap());
+        }
+    });
+    row(write_small, "**rost::to_string_pretty**", per_op(d, LOADS));
+    let d = median(15, || {
+        for _ in 0..LOADS {
+            black_box(serde_json::to_string_pretty(black_box(&config)).unwrap());
+        }
+    });
+    row(write_small, "serde_json::to_string_pretty", per_op(d, LOADS));
+    let d = median(15, || {
+        for _ in 0..LOADS {
+            black_box(toml::to_string(black_box(&config)).unwrap());
+        }
+    });
+    row(write_small, "toml::to_string", per_op(d, LOADS));
+
     let scan = "Scan / index only";
     let d = median(15, || {
         black_box(rost::parser::parse_into_bytecode(black_box(rost_src.as_bytes())));
@@ -203,10 +265,6 @@ fn main() {
         black_box(serde_json::from_str::<serde::de::IgnoredAny>(black_box(&json_src)).unwrap());
     });
     row(scan, "serde_json validate (IgnoredAny)", throughput(json_src.len(), d));
-    let d = median(9, || {
-        black_box(serde_json::from_str::<serde_json::Value>(black_box(&json_src)).unwrap());
-    });
-    row(scan, "serde_json DOM (Value)", throughput(json_src.len(), d));
 
     let lookup = "Lookup by path (per query)";
     let t = Template::from_str(&rost_src);

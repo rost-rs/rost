@@ -149,7 +149,52 @@ assert_eq!(err.to_string(), "1:8: unterminated string literal");
 Use `Template` + `query_*` when you need to look values up by path instead: after a
 one-time ~3 ms index build on a 5 MB document, each lookup takes ~60 ns.
 
-### 5. Programmatic Document Building
+### 5. Writing, Dynamic Values and Enums (`serde`)
+
+The API mirrors `serde_json`: `to_string` / `to_string_pretty` / `to_vec` / `to_writer`,
+`from_reader`, a `Value` tree with a `rost!` literal macro, and `rost::Error` /
+`rost::Result`. Code written against `serde_json` ports by renaming the crate (see
+`tests/serde_json_readme.rs`).
+
+```rust
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+enum Shape {
+    Empty,
+    Circle(f64),
+    Rect { w: u32, h: u32 },
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+struct Scene {
+    name: String,
+    shapes: Vec<Shape>,
+}
+
+let scene = Scene {
+    name: "demo".into(),
+    shapes: vec![Shape::Empty, Shape::Circle(1.5), Shape::Rect { w: 2, h: 3 }],
+};
+let text = rost::to_string(&scene).unwrap();
+assert_eq!(text, "name: \"demo\", shapes [Empty, { Circle: 1.5 }, { Rect { w: 2, h: 3 } }]");
+assert_eq!(rost::from_str::<Scene>(&text).unwrap(), scene);
+
+// Untyped access, like serde_json::Value.
+let v: rost::Value = rost::from_str(&text).unwrap();
+assert_eq!(v["shapes"][1]["Circle"], 1.5);
+
+let patch = rost::rost!({ name: "copy", tags: ["a", "b"] });
+assert_eq!(patch.to_string(), "name: \"copy\", tags [\"a\", \"b\"]");
+```
+
+How Rust maps to `.rost`: structs and maps are blocks, `Vec`s and tuples are lists
+(items may be inline blocks `{ … }` or nested lists), unit variants are bare names and
+variants with data are single-entry blocks (`{ Circle: 1.5 }`). Integer, `bool` and enum
+map keys work. Writing fails, instead of producing text that would not read back, for
+keys the format cannot hold and for NaN/infinite floats.
+
+### 6. Programmatic Document Building
 
 ```rust
 use rost::RostBuilder;
@@ -180,25 +225,33 @@ Reproduce the comparison against `serde_json` and `toml` (equivalent data, same 
 cargo bench --features serde --bench compare
 ```
 
-Results for 50,000 records on an Intel i7-13650HX (pinned to one core, medians):
+Results for 50,000 records on an Intel i7-13650HX (pinned to one core, medians of two
+runs; absolute times vary with machine load, the ratios are what is stable):
 
 | Workload | Contender | Median |
 |---|---|---|
-| 5 MB document → `HashMap<String, Item>` | **`rost::from_str`** | 14.2 ms |
-| | `serde_json`, one record per line (5.3 MB) | 13.5 ms |
-| | `serde_json`, pretty-printed like the rost file (7.7 MB) | 15.3 ms |
-| | `toml` | 93.8 ms |
-| Small config → struct | **`rost::from_str`** | 205 ns |
-| | `serde_json` compact / pretty | 193 ns / 233 ns |
-| | `toml` | 1.45 µs |
-| Load a queryable document | **rost lenient index** / strict (validated) | 5.6 ms / 8.8 ms |
-| | `serde_json::Value` DOM | 44.5 ms |
-| Lookup by dot path | **rost `query_raw_value`** (after one ~3 ms index build) | 60 ns |
-| | `serde_json` `Value` indexing (after the DOM build) | 84 ns |
+| 5 MB document → `HashMap<String, Item>` | **`rost::from_str`** | 9.8 ms |
+| | `serde_json`, one record per line (5.3 MB) | 9.7 ms |
+| | `serde_json`, pretty-printed like the rost file (7.7 MB) | 10.8 ms |
+| | `toml` | 68–70 ms |
+| Small config → struct | **`rost::from_str`** | 137 ns |
+| | `serde_json` compact / pretty | 139–143 ns / 171 ns |
+| | `toml` | 1.0 µs |
+| 5 MB document → dynamic tree | **`rost::Value`** | 19–26 ms |
+| | `serde_json::Value` | 23–32 ms |
+| | `toml::Table` | 83–86 ms |
+| Serialize the 50k-record map | **`rost::to_string`** / **`to_string_pretty`** | 3.2–3.3 ms / 3.2–3.3 ms |
+| | `serde_json::to_string` / `to_string_pretty` | 3.2–3.3 ms / 5.0–5.1 ms |
+| | `toml::to_string` | 27–28 ms |
+| Serialize small config (pretty) | **`rost::to_string_pretty`** | 70 ns |
+| | `serde_json::to_string_pretty` | 146 ns |
+| Load a queryable document | **rost lenient index** / strict (validated) | 3.7 ms / 5.2 ms |
+| Lookup by dot path | **rost `query_raw_value`** (after one ~3 ms index build) | 43 ns |
+| | `serde_json` `Value` indexing (after the DOM build) | 57 ns |
 
-Typed loading is on par with `serde_json` (ahead of it when both files use the same
-layout, since rost files are ~30% smaller); loading a document you query by path is
-~8× faster than building a `serde_json::Value`.
+Typed loading and compact writing are on par with `serde_json`; readable output, the
+dynamic tree and small configs are faster (pretty writing ~1.5×, small config writes
+~2×, `Value` ~1.2×), and rost files are ~30% smaller than equivalent pretty JSON.
 
 ---
 

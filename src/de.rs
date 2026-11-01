@@ -6,7 +6,7 @@
 
 use std::fmt;
 use serde::de::value::BorrowedStrDeserializer;
-use serde::de::{self, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
+use serde::de::{self, DeserializeSeed, Deserializer, EnumAccess, IgnoredAny, MapAccess, VariantAccess, Visitor};
 
 use super::parser::*;
 use super::query::BlockView;
@@ -35,8 +35,7 @@ fn strip_hash(s: &str) -> &str {
     s.strip_prefix('#').unwrap_or(s)
 }
 use super::field::{
-    parse_fast_f32, parse_fast_f64, parse_fast_u32, parse_plain_int, unescape, unquote, QuoteStyle,
-    TopLevelSplit,
+    parse_fast_f32, parse_fast_f64, parse_fast_u32, parse_plain_int, unescape, QuoteStyle,
 };
 use std::borrow::Cow;
 
@@ -83,6 +82,16 @@ fn trim_bare(value: &str) -> &str {
         [only] if plain(*only) => value,
         _ => value.trim().trim_end_matches(';').trim_matches('"'),
     }
+}
+
+/// A float for untyped targets: only text that is entirely a number, so `140px` and
+/// `inf` stay strings. Typed `f64` targets still accept units through `parse_fast_f64`.
+fn parse_untyped_float(s: &str) -> Option<f64> {
+    let digits = s.strip_prefix(['-', '+']).unwrap_or(s);
+    if !digits.starts_with(|c: char| c.is_ascii_digit() || c == '.') {
+        return None;
+    }
+    s.parse().ok()
 }
 
 pub(crate) struct FieldDeserializer<'a> {
@@ -133,7 +142,7 @@ impl<'de> Deserializer<'de> for FieldDeserializer<'de> {
         {
             return visitor.visit_u32(u);
         }
-        if let Some(f) = parse_fast_f64(s) {
+        if let Some(f) = parse_untyped_float(s) {
             return visitor.visit_f64(f);
         }
         if s == "true" {
@@ -200,9 +209,178 @@ impl<'de> Deserializer<'de> for FieldDeserializer<'de> {
         visitor.visit_some(self)
     }
 
+    /// A scalar names a unit variant: `mode: Dark`.
+    #[inline]
+    fn deserialize_enum<V: Visitor<'de>>(
+        self,
+        _name: &'static str,
+        _variants: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, Self::Error> {
+        match self.text() {
+            Cow::Borrowed(s) => visitor.visit_enum(BorrowedStrDeserializer::new(s)),
+            Cow::Owned(s) => visitor.visit_enum(de::value::StringDeserializer::<DeError>::new(s)),
+        }
+    }
+
     serde::forward_to_deserialize_any! {
         char bytes byte_buf unit unit_struct newtype_struct seq tuple
-        tuple_struct map struct enum identifier ignored_any
+        tuple_struct map struct identifier ignored_any
+    }
+}
+
+// ==============================================================================
+// MAP KEYS
+// ==============================================================================
+
+macro_rules! key_integers {
+    ($($method:ident => $visit:ident: $ty:ty),* $(,)?) => {$(
+        #[inline]
+        fn $method<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
+            match self.0.parse::<$ty>() {
+                Ok(v) => visitor.$visit(v),
+                Err(_) => Err(DeError(format!("invalid {} map key: {}", stringify!($ty), self.0))),
+            }
+        }
+    )*};
+}
+
+/// A key: a string that also reads as an integer, a bool or a unit variant, so maps
+/// such as `HashMap<u32, T>` work like they do in `serde_json`.
+pub(crate) struct KeyDeserializer<'a>(pub(crate) &'a str);
+
+impl<'de> Deserializer<'de> for KeyDeserializer<'de> {
+    type Error = DeError;
+
+    #[inline]
+    fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
+        visitor.visit_borrowed_str(self.0)
+    }
+
+    key_integers! {
+        deserialize_i8 => visit_i8: i8,
+        deserialize_i16 => visit_i16: i16,
+        deserialize_i32 => visit_i32: i32,
+        deserialize_i64 => visit_i64: i64,
+        deserialize_i128 => visit_i128: i128,
+        deserialize_u8 => visit_u8: u8,
+        deserialize_u16 => visit_u16: u16,
+        deserialize_u32 => visit_u32: u32,
+        deserialize_u64 => visit_u64: u64,
+        deserialize_u128 => visit_u128: u128,
+    }
+
+    fn deserialize_bool<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
+        match self.0 {
+            "true" => visitor.visit_bool(true),
+            "false" => visitor.visit_bool(false),
+            _ => Err(DeError(format!("invalid bool map key: {}", self.0))),
+        }
+    }
+
+    fn deserialize_option<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
+        visitor.visit_some(self)
+    }
+
+    fn deserialize_newtype_struct<V: Visitor<'de>>(self, _name: &'static str, visitor: V) -> Result<V::Value, Self::Error> {
+        visitor.visit_newtype_struct(self)
+    }
+
+    fn deserialize_enum<V: Visitor<'de>>(
+        self,
+        _name: &'static str,
+        _variants: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, Self::Error> {
+        visitor.visit_enum(BorrowedStrDeserializer::new(self.0))
+    }
+
+    serde::forward_to_deserialize_any! {
+        f32 f64 char str string bytes byte_buf unit unit_struct seq tuple
+        tuple_struct map struct identifier ignored_any
+    }
+}
+
+// ==============================================================================
+// ENUMS WITH DATA
+// ==============================================================================
+
+/// An externally tagged enum read from a block with exactly one entry, shared by every
+/// block-like deserializer: `{ Variant: 5 }`, `{ Variant [1, 2] }`, `{ Variant { x: 1 } }`.
+pub(crate) struct MapEnum<M>(pub(crate) M);
+
+impl<'de, M: MapAccess<'de, Error = DeError>> MapEnum<M> {
+    /// Rejects any entry after the variant.
+    fn end(&mut self) -> Result<(), DeError> {
+        match self.0.next_key::<IgnoredAny>()? {
+            Some(_) => Err(DeError("expected a single enum variant in the block".into())),
+            None => Ok(()),
+        }
+    }
+}
+
+impl<'de, M: MapAccess<'de, Error = DeError>> EnumAccess<'de> for MapEnum<M> {
+    type Error = DeError;
+    type Variant = Self;
+
+    fn variant_seed<V: DeserializeSeed<'de>>(mut self, seed: V) -> Result<(V::Value, Self), DeError> {
+        match self.0.next_key_seed(seed)? {
+            Some(variant) => Ok((variant, self)),
+            None => Err(DeError("expected an enum variant, found an empty block".into())),
+        }
+    }
+}
+
+impl<'de, M: MapAccess<'de, Error = DeError>> VariantAccess<'de> for MapEnum<M> {
+    type Error = DeError;
+
+    fn unit_variant(mut self) -> Result<(), DeError> {
+        self.0.next_value::<IgnoredAny>()?;
+        self.end()
+    }
+
+    fn newtype_variant_seed<T: DeserializeSeed<'de>>(mut self, seed: T) -> Result<T::Value, DeError> {
+        let value = self.0.next_value_seed(seed)?;
+        self.end()?;
+        Ok(value)
+    }
+
+    fn tuple_variant<V: Visitor<'de>>(mut self, _len: usize, visitor: V) -> Result<V::Value, DeError> {
+        let value = self.0.next_value_seed(SeqHint(visitor))?;
+        self.end()?;
+        Ok(value)
+    }
+
+    fn struct_variant<V: Visitor<'de>>(
+        mut self,
+        _fields: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, DeError> {
+        let value = self.0.next_value_seed(MapHint(visitor))?;
+        self.end()?;
+        Ok(value)
+    }
+}
+
+/// Deserializes the next value as a sequence.
+struct SeqHint<V>(V);
+
+impl<'de, V: Visitor<'de>> DeserializeSeed<'de> for SeqHint<V> {
+    type Value = V::Value;
+
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<V::Value, D::Error> {
+        deserializer.deserialize_seq(self.0)
+    }
+}
+
+/// Deserializes the next value as a map.
+struct MapHint<V>(V);
+
+impl<'de, V: Visitor<'de>> DeserializeSeed<'de> for MapHint<V> {
+    type Value = V::Value;
+
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<V::Value, D::Error> {
+        deserializer.deserialize_map(self.0)
     }
 }
 
@@ -224,36 +402,18 @@ impl<'de> Deserializer<'de> for RawListDeserializer<'de> {
 
     #[inline]
     fn deserialize_seq<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
-        let clean = self.raw.trim().trim_start_matches('[').trim_end_matches(']');
-        let items: Vec<&'de str> = TopLevelSplit::new(clean, |b| b == b',').collect();
-        visitor.visit_seq(RawSeqAccess { items, idx: 0 })
+        crate::text::visit_list_body(self.raw, visitor)
+    }
+
+    #[inline]
+    fn deserialize_option<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
+        visitor.visit_some(self)
     }
 
     serde::forward_to_deserialize_any! {
         bool i8 i16 i32 i64 u8 u16 u32 u64 f32 f64 char str string
-        bytes byte_buf option unit unit_struct newtype_struct tuple
+        bytes byte_buf unit unit_struct newtype_struct tuple
         tuple_struct map struct enum identifier ignored_any
-    }
-}
-
-struct RawSeqAccess<'a> {
-    items: Vec<&'a str>,
-    idx: usize,
-}
-
-impl<'de> SeqAccess<'de> for RawSeqAccess<'de> {
-    type Error = DeError;
-
-    fn next_element_seed<T: DeserializeSeed<'de>>(&mut self, seed: T) -> Result<Option<T::Value>, Self::Error> {
-        if self.idx >= self.items.len() {
-            return Ok(None);
-        }
-        let item = self.items[self.idx];
-        self.idx += 1;
-        // Items are typed like property values: `1` is a number, `"1"` a string.
-        let inner = unquote(item);
-        let quote = if inner.len() == item.len() { QuoteStyle::Bare } else { QuoteStyle::Quoted };
-        seed.deserialize(FieldDeserializer { name: "list item", value: inner, quote }).map(Some)
     }
 }
 
@@ -314,10 +474,19 @@ impl<'de, 's> Deserializer<'de> for TemplateStreamDeserializer<'de, 's> {
         })
     }
 
+    fn deserialize_enum<V: Visitor<'de>>(
+        self,
+        _name: &'static str,
+        _variants: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, Self::Error> {
+        visitor.visit_enum(MapEnum(BlockMapStreamAccess { stream: self.stream, current_entry: None }))
+    }
+
     serde::forward_to_deserialize_any! {
         bool i8 i16 i32 i64 u8 u16 u32 u64 f32 f64 char str string
         bytes byte_buf option unit unit_struct newtype_struct seq tuple
-        tuple_struct map struct enum identifier ignored_any
+        tuple_struct map struct identifier ignored_any
     }
 }
 
@@ -354,10 +523,24 @@ impl<'de, 's> Deserializer<'de> for BlockStreamDeserializer<'de, 's> {
         visitor.visit_unit()
     }
 
+    #[inline]
+    fn deserialize_option<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
+        visitor.visit_some(self)
+    }
+
+    fn deserialize_enum<V: Visitor<'de>>(
+        self,
+        _name: &'static str,
+        _variants: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, Self::Error> {
+        visitor.visit_enum(MapEnum(BlockMapStreamAccess { stream: self.stream, current_entry: None }))
+    }
+
     serde::forward_to_deserialize_any! {
         bool i8 i16 i32 i64 u8 u16 u32 u64 f32 f64 char str string
-        bytes byte_buf option unit unit_struct newtype_struct seq tuple
-        tuple_struct map struct enum identifier
+        bytes byte_buf unit unit_struct newtype_struct seq tuple
+        tuple_struct map struct identifier
     }
 }
 
@@ -378,28 +561,28 @@ impl<'de, 's> MapAccess<'de> for BlockMapStreamAccess<'de, 's> {
                     );
                     self.stream.idx += REC_PAIR;
                     self.current_entry = Some(StreamEntry::Field { name: key, val, quote });
-                    return seed.deserialize(BorrowedStrDeserializer::new(key)).map(Some);
+                    return seed.deserialize(KeyDeserializer(key)).map(Some);
                 }
                 TAG_BLOCK_START => {
                     let name = resolve_slice(self.stream.data, self.stream.bytes, self.stream.idx + 1);
                     self.stream.idx += REC_NAMED;
                     let clean = strip_hash(name);
                     self.current_entry = Some(StreamEntry::SubBlock);
-                    return seed.deserialize(BorrowedStrDeserializer::new(clean)).map(Some);
+                    return seed.deserialize(KeyDeserializer(clean)).map(Some);
                 }
                 TAG_LIST => {
                     let key = resolve_slice(self.stream.data, self.stream.bytes, self.stream.idx + 1);
                     let raw = resolve_slice(self.stream.data, self.stream.bytes, self.stream.idx + 9);
                     self.stream.idx += REC_RANGE;
                     self.current_entry = Some(StreamEntry::List { raw });
-                    return seed.deserialize(BorrowedStrDeserializer::new(key)).map(Some);
+                    return seed.deserialize(KeyDeserializer(key)).map(Some);
                 }
                 TAG_ENUM => {
                     let key = resolve_slice(self.stream.data, self.stream.bytes, self.stream.idx + 1);
                     let raw = resolve_slice(self.stream.data, self.stream.bytes, self.stream.idx + 9);
                     self.stream.idx += REC_RANGE;
                     self.current_entry = Some(StreamEntry::Enum { raw });
-                    return seed.deserialize(BorrowedStrDeserializer::new(key)).map(Some);
+                    return seed.deserialize(KeyDeserializer(key)).map(Some);
                 }
                 TAG_BLOCK_END => {
                     self.stream.idx += REC_BLOCK_END;
@@ -462,10 +645,19 @@ impl<'de> Deserializer<'de> for BlockViewDeserializer<'de> {
         visitor.visit_map(self)
     }
 
+    fn deserialize_enum<V: Visitor<'de>>(
+        self,
+        _name: &'static str,
+        _variants: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, Self::Error> {
+        visitor.visit_enum(MapEnum(self))
+    }
+
     serde::forward_to_deserialize_any! {
         bool i8 i16 i32 i64 u8 u16 u32 u64 f32 f64 char str string
         bytes byte_buf option unit unit_struct newtype_struct seq tuple
-        tuple_struct map struct enum identifier ignored_any
+        tuple_struct map struct identifier ignored_any
     }
 }
 
@@ -477,7 +669,7 @@ impl<'de> MapAccess<'de> for BlockViewDeserializer<'de> {
             return Ok(None);
         }
         let f = &self.block.fields[self.idx];
-        seed.deserialize(BorrowedStrDeserializer::new(f.name())).map(Some)
+        seed.deserialize(KeyDeserializer(f.name())).map(Some)
     }
 
     fn next_value_seed<V: DeserializeSeed<'de>>(&mut self, seed: V) -> Result<V::Value, Self::Error> {

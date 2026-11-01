@@ -105,15 +105,28 @@ i7-13650HX, pinned to one core; `cargo bench --features serde --bench compare`):
 
 **Goal:** switching from `serde_json` is a one-line change. Same mental model, same API shape.
 
-- [ ] `rost::from_reader` and API parity with `serde_json` (`from_str` / `from_slice` land in Sprint 3)
-- [ ] Serializer: `rost::to_string`, `to_string_pretty`, `to_writer`, `to_vec`
+- [x] `rost::from_reader` and API parity with `serde_json` (`from_str` / `from_slice` land in Sprint 3; `rost::Error`, `rost::Result`)
+- [x] Serializer: `rost::to_string`, `to_string_pretty`, `to_writer`, `to_vec` (+ `_pretty` variants)
 - [x] Zero-copy borrowing (`&'de str`, `Cow<'de, str>`) straight from the buffer (done in Sprint 3)
-- [ ] Enums (unit / newtype / tuple / struct variants), `Option`, `#[serde(default)]`, `flatten`, `rename`
-- [ ] Nested structs ↔ nested blocks, `Vec<Struct>` ↔ list of blocks, `HashMap` ↔ block
-- [ ] `rost::Value` dynamic tree + `rost!{}` literal macro (like `json!`)
-- [ ] Round-trip property tests (`proptest`): `T → rost → T` is identity
+- [x] Enums (unit / newtype / tuple / struct variants), `Option`, `#[serde(default)]`, `flatten`, `rename` (+ tagged / untagged enums, integer / bool / enum map keys)
+- [x] Nested structs ↔ nested blocks, `Vec<Struct>` ↔ list of blocks, `HashMap` ↔ block (list items may be inline blocks `{ … }` or nested lists)
+- [x] `rost::Value` dynamic tree + `rost!{}` literal macro (like `json!`), `from_value`
+- [x] Round-trip property tests: `T → rost → T` is identity (seeded in-repo generator, like the stress test, instead of a `proptest` dependency)
 
 **Done when:** the `serde_json` examples from its README port to `rost` by renaming the crate.
+✅ `tests/serde_json_readme.rs` (the data is written in `.rost`; `json!` becomes `rost!`).
+
+| Workload (50k records, pinned, medians) | `rost` | `serde_json` |
+|---|---|---|
+| Serialize, compact | 3.2–3.3 ms | 3.2–3.3 ms (**on par**) |
+| Serialize, pretty | 3.2–3.3 ms | 5.0–5.1 ms (**rost ~1.5× faster**) |
+| Serialize small config, pretty | 70 ns | 146 ns (**rost ~2× faster**) |
+| Text → dynamic tree (`Value`) | 19–26 ms | 23–32 ms (**rost ~1.2× faster**) |
+| Typed loading (Sprint 3 workloads) | unchanged: instruction counts −0.7% (`from_str`) / −1.2% (small config) vs Sprint 3 | |
+
+> Fixed on the way: a `]` inside a quoted list item ended the list early (data loss in
+> both parsers), and untyped targets (`serde_json::Value`, `rost::Value`) dropped units
+> (`140px` → `140.0`).
 
 ## Sprint 5 — JSON interop and proven speed
 

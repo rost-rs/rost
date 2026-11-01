@@ -95,7 +95,11 @@ pub mod object;
 #[cfg(feature = "serde")]
 pub mod de;
 #[cfg(feature = "serde")]
+mod ser;
+#[cfg(feature = "serde")]
 mod text;
+#[cfg(feature = "serde")]
+pub mod value;
 
 pub use error::{ParseError, ParseErrorKind};
 pub use field::{Dimension, ParsedField, QuoteStyle, Scalar};
@@ -106,8 +110,18 @@ pub use object::RostObject;
 
 #[cfg(feature = "serde")]
 pub use de::{from_block, from_template, DeError};
+/// The error type of serialization and deserialization, named like `serde_json::Error`.
 #[cfg(feature = "serde")]
-pub use text::{from_slice, from_str};
+pub use de::DeError as Error;
+/// `Result` with [`Error`] as the default error, named like `serde_json::Result`.
+#[cfg(feature = "serde")]
+pub type Result<T, E = Error> = std::result::Result<T, E>;
+#[cfg(feature = "serde")]
+pub use ser::{to_string, to_string_pretty, to_vec, to_vec_pretty, to_writer, to_writer_pretty};
+#[cfg(feature = "serde")]
+pub use text::{from_reader, from_slice, from_str};
+#[cfg(feature = "serde")]
+pub use value::{from_value, Map, Value};
 
 use std::fs;
 use std::path::{Path, PathBuf};

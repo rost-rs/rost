@@ -546,25 +546,20 @@ fn scan<D: Diagnostics>(raw: &[u8], diag: &mut D) -> Vec<u8> {
             // Lists / Arrays: key [ item1, item2 ]
             b'[' => {
                 let start_line = line;
-                i += 1;
-                let body_start = i;
-                let mut depth = 1;
-                while i < len && depth > 0 {
-                    match raw[i] {
-                        b'[' => depth += 1,
-                        b']' => depth -= 1,
-                        b'\n' => line += 1,
-                        _ => {}
-                    }
-                    i += 1;
-                }
+                let body_start = i + 1;
                 // A closed list ends before its `]`; an unterminated one runs to EOF.
-                let body_end = if depth > 0 {
-                    diag.report(ParseErrorKind::UnterminatedList, body_start - 1..line_end(raw, body_start));
-                    i
-                } else {
-                    i - 1
+                let body_end = match find_list_end(raw, body_start) {
+                    Some(end) => {
+                        i = end + 1;
+                        end
+                    }
+                    None => {
+                        diag.report(ParseErrorKind::UnterminatedList, body_start - 1..line_end(raw, body_start));
+                        i = len;
+                        len
+                    }
                 };
+                line += count_newlines(&raw[body_start..body_end]);
                 let body_off = body_start as u32;
                 let body_len = (body_end - body_start) as u32;
                 let end_line = line;
@@ -892,6 +887,39 @@ fn find_nested_value_end(raw: &[u8], nested: usize) -> Option<usize> {
             },
             b'\n' => return Some(i),
             b',' | b'}' if depth == 0 => return Some(i),
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Finds the `]` closing a list whose body starts at `start`.
+///
+/// Nested lists are balanced and quoted strings are skipped, so `["a]b"]` is one item.
+/// A quote without a closing partner is treated as a plain character.
+pub(crate) fn find_list_end(raw: &[u8], start: usize) -> Option<usize> {
+    let mut depth = 1u32;
+    let mut i = start;
+    while i < raw.len() {
+        match raw[i] {
+            b'[' => depth += 1,
+            b']' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            b'"' if raw[i..].starts_with(RAW_QUOTE) => {
+                if let Some(end) = memchr::memmem::find(&raw[i + 3..], RAW_QUOTE) {
+                    i += end + 5;
+                }
+            }
+            b'"' => {
+                if let Some(end) = find_unescaped_quote(&raw[i + 1..]) {
+                    i += end + 1;
+                }
+            }
             _ => {}
         }
         i += 1;

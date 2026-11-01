@@ -1130,3 +1130,179 @@ fn test_from_str_reports_positions() {
         "cannot parse 'port' as u16: 70000"
     );
 }
+
+#[test]
+fn test_list_scanning_skips_brackets_inside_strings() {
+    let src = "tags [\"a]b\", \"[\", c]\nafter: 1\n";
+    let t = Template::parse(src).unwrap();
+    assert_eq!(t.query_list("tags"), Some(vec!["a]b", "[", "c"]));
+    assert_eq!(t.get_value("after"), Some("1"));
+    assert_eq!(t.get("after").unwrap().line(), 2);
+
+    // An unpaired quote is a plain character, as before.
+    let t = Template::from_str("tags [a\"b]\nafter: 1\n");
+    assert_eq!(t.query_list("tags"), Some(vec!["a\"b"]));
+    assert_eq!(t.get_value("after"), Some("1"));
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn test_from_str_list_skips_brackets_inside_strings() {
+    #[derive(Debug, serde::Deserialize, PartialEq)]
+    struct Doc {
+        tags: Vec<String>,
+        after: u32,
+    }
+    let doc: Doc = rost::from_str("tags [\"a]b\", \"[\", c]\nafter: 1\n").unwrap();
+    assert_eq!(doc, Doc { tags: vec!["a]b".into(), "[".into(), "c".into()], after: 1 });
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn test_serde_lists_of_blocks_and_nested_lists() {
+    use serde::Deserialize;
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct Item<'a> {
+        id: u32,
+        name: &'a str,
+        #[serde(default)]
+        tags: Vec<String>,
+    }
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct Doc<'a> {
+        #[serde(borrow)]
+        items: Vec<Item<'a>>,
+        grid: Vec<Vec<u8>>,
+        pair: (u32, String),
+        maybe: Option<Vec<f64>>,
+    }
+
+    let src = "items [\n    { id: 1, name: \"a]b\" },\n    {\n        id: 2\n        name: \"c\"\n        tags [x, \"y, z\"]\n    },\n]\ngrid [[1, 2], [], [3]]\npair [7, \"seven\"]\nmaybe [0.5]\n";
+    let expected = Doc {
+        items: vec![
+            Item { id: 1, name: "a]b", tags: vec![] },
+            Item { id: 2, name: "c", tags: vec!["x".into(), "y, z".into()] },
+        ],
+        grid: vec![vec![1, 2], vec![], vec![3]],
+        pair: (7, "seven".into()),
+        maybe: Some(vec![0.5]),
+    };
+    assert_eq!(rost::from_str::<Doc>(src).unwrap(), expected);
+    let template = Template::parse(src).unwrap();
+    assert_eq!(rost::from_template::<Doc>(&template).unwrap(), expected);
+
+    // A fixed-size target must not silently drop extra items.
+    let err = rost::from_str::<Doc>(&src.replace("pair [7, \"seven\"]", "pair [7, \"seven\", 8]")).unwrap_err();
+    assert!(err.to_string().ends_with("list has more items than expected"), "{err}");
+    let err = rost::from_str::<Doc>(&src.replace("pair [7, \"seven\"]", "pair [7, \"seven\" x]")).unwrap_err();
+    assert_eq!(err.to_string(), "10:18: expected `,` or `]` after a list item");
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn test_serde_enums_of_every_shape() {
+    use serde::Deserialize;
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    enum Shape {
+        Empty,
+        Circle(f64),
+        Rect(u32, u32),
+        Poly { points: Vec<(i32, i32)>, closed: bool },
+    }
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct Doc {
+        a: Shape,
+        b: Shape,
+        c: Shape,
+        d: Shape,
+        e: Shape,
+        all: Vec<Shape>,
+        mode: Shape,
+    }
+
+    let src = "a: Empty\nb { Circle: 1.5 }\nc { Rect [3, 4] }\nd {\n    Poly {\n        points [[0, 0], [1, -1]]\n        closed: true\n    }\n}\ne: \"Empty\"\nall [Empty, { Circle: 2.0 }, { Rect [1, 2] }]\nmode | Empty, Circle |\n";
+    let expected = Doc {
+        a: Shape::Empty,
+        b: Shape::Circle(1.5),
+        c: Shape::Rect(3, 4),
+        d: Shape::Poly { points: vec![(0, 0), (1, -1)], closed: true },
+        e: Shape::Empty,
+        all: vec![Shape::Empty, Shape::Circle(2.0), Shape::Rect(1, 2)],
+        mode: Shape::Empty,
+    };
+    assert_eq!(rost::from_str::<Doc>(src).unwrap(), expected);
+    assert_eq!(rost::from_template::<Doc>(&Template::parse(src).unwrap()).unwrap(), expected);
+
+    // An enum at the root is a document with a single entry.
+    assert_eq!(rost::from_str::<Shape>("Rect [5, 6]\n").unwrap(), Shape::Rect(5, 6));
+    assert_eq!(rost::from_template::<Shape>(&Template::parse("Circle: 3\n").unwrap()).unwrap(), Shape::Circle(3.0));
+
+    let err = |src: &str| rost::from_str::<Doc>(src).unwrap_err().to_string();
+    assert!(err(&src.replace("b { Circle: 1.5 }", "b { Circle: 1.5, Empty: null }")).contains("single enum variant"));
+    assert!(err(&src.replace("b { Circle: 1.5 }", "b {}")).contains("empty block"));
+    assert!(err(&src.replace("a: Empty", "a: Hexagon")).contains("unknown variant `Hexagon`"));
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn test_serde_map_keys_beyond_strings() {
+    use serde::Deserialize;
+    use std::collections::BTreeMap;
+
+    #[derive(Debug, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+    enum Level {
+        Low,
+        High,
+    }
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct Doc {
+        ports: BTreeMap<u16, String>,
+        offsets: BTreeMap<i64, bool>,
+        levels: BTreeMap<Level, u8>,
+    }
+
+    let src = "ports {\n    80: \"http\"\n    443: \"https\"\n}\noffsets { -1: true, 2: false }\nlevels { Low: 1, High: 9 }\n";
+    let expected = Doc {
+        ports: BTreeMap::from([(80, "http".into()), (443, "https".into())]),
+        offsets: BTreeMap::from([(-1, true), (2, false)]),
+        levels: BTreeMap::from([(Level::Low, 1), (Level::High, 9)]),
+    };
+    assert_eq!(rost::from_str::<Doc>(src).unwrap(), expected);
+    assert_eq!(rost::from_template::<Doc>(&Template::parse(src).unwrap()).unwrap(), expected);
+    assert!(rost::from_str::<Doc>(&src.replace("80:", "web:")).unwrap_err().to_string().contains("invalid u16 map key: web"));
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn test_from_reader_reads_streams() {
+    use std::collections::HashMap;
+
+    let doc: HashMap<String, u32> = rost::from_reader(std::io::Cursor::new(b"a: 1\nb: 2\n".to_vec())).unwrap();
+    assert_eq!(doc, HashMap::from([("a".into(), 1), ("b".into(), 2)]));
+
+    let invalid = rost::from_reader::<_, HashMap<String, u32>>(std::io::Cursor::new(b"a: \xff\n".to_vec()));
+    assert!(invalid.unwrap_err().to_string().starts_with("I/O error"));
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn test_untyped_values_keep_units() {
+    use serde_json::{json, Value};
+
+    let src = "size: 140px\nratio: 50%\nn: -1.5e3\nw: .5\nword: inf\nneg: -inf\n";
+    let expected = json!({"size": "140px", "ratio": "50%", "n": -1500.0, "w": 0.5, "word": "inf", "neg": "-inf"});
+    assert_eq!(rost::from_str::<Value>(src).unwrap(), expected);
+    assert_eq!(rost::from_template::<Value>(&Template::parse(src).unwrap()).unwrap(), expected);
+
+    // Typed targets still read the number out of a dimension.
+    #[derive(serde::Deserialize)]
+    struct Typed {
+        size: f64,
+    }
+    assert_eq!(rost::from_str::<Typed>("size: 140px\n").unwrap().size, 140.0);
+}
