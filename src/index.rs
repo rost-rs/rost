@@ -82,7 +82,7 @@ impl PathIndex {
                         index.blocks[id as usize].end = idx as u32;
                     }
                 }
-                parser::TAG_COMMON_TEXT if stack.is_empty() => {
+                parser::TAG_COMMON_TEXT | parser::TAG_LIST | parser::TAG_ENUM if stack.is_empty() => {
                     let key = resolve_slice(data, fields, idx + 1);
                     index.insert_root_key(data, fields, finish(mix_segment(SEED, key.as_bytes())), idx as u32);
                 }
@@ -132,7 +132,8 @@ impl PathIndex {
         }
     }
 
-    /// Returns the bytecode index of the property addressed by `path` (without a leading `#`).
+    /// Returns the bytecode index of the property, list or enum addressed by `path`
+    /// (without a leading `#`). The first definition of a key wins, whatever its kind.
     pub(crate) fn get(&self, data: &[u8], fields: &[u8], path: &str) -> Option<usize> {
         let Some((block_path, key)) = path.rsplit_once('.') else {
             let hash = finish(mix_segment(SEED, path.as_bytes()));
@@ -171,7 +172,7 @@ impl PathIndex {
         while idx < end {
             let tag = fields[idx];
             match tag {
-                parser::TAG_COMMON_TEXT => {
+                parser::TAG_COMMON_TEXT | parser::TAG_LIST | parser::TAG_ENUM => {
                     if resolve_slice(data, fields, idx + 1) == key {
                         return Some(idx);
                     }

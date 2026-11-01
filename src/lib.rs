@@ -104,7 +104,7 @@ mod text;
 pub mod value;
 
 pub use error::{ParseError, ParseErrorKind};
-pub use field::{Dimension, ParsedField, QuoteStyle, Scalar};
+pub use field::{Dimension, Items, ParsedField, QuoteStyle, Scalar};
 pub use malleable::{MalleablePatcher, RostBuilder};
 pub use query::{parse_blocks, BlockView, FieldIter};
 pub use watcher::{CentralWatcher, HotReloadWatcher, ReloadCallback};
@@ -459,7 +459,14 @@ impl Template {
     }
 
     /// Queries a field across scoped blocks using dot-notation (e.g. `"palette.bg_window"` or `"title"`).
+    ///
+    /// Paths the [path index](Template::locate_property) resolves cost O(depth); only
+    /// selectors it cannot address (a block whose own name contains `.`) scan the document.
     pub fn query_field(&self, path: &str) -> Option<ParsedField<'_>> {
+        if let Some(rec) = self.locate_record(path) {
+            let len = parser::record_len(self.fields[rec]);
+            return FieldIter::new(&self.data, &self.fields[rec..rec + len]).next();
+        }
         if let Some((b, key)) = self.resolve_block_and_key(path) {
             b.get(key).cloned()
         } else {
@@ -481,10 +488,23 @@ impl Template {
     /// (`"audio.volume"`, `"car.dimensions.width"`) matches the property inside that
     /// exact block nesting.
     pub(crate) fn locate_property(&self, path: &str) -> Option<usize> {
+        self.locate_record(path).filter(|&rec| self.fields[rec] == parser::TAG_COMMON_TEXT)
+    }
+
+    /// Like [`Template::locate_property`] but for any property, list or enum record.
+    pub(crate) fn locate_record(&self, path: &str) -> Option<usize> {
         let clean_path = path.strip_prefix('#').unwrap_or(path);
         self.index
             .get_or_init(|| index::PathIndex::build(&self.data, &self.fields))
             .get(&self.data, &self.fields, clean_path)
+    }
+
+    /// Looks `path` up in the index and returns the body of a record of kind `tag`:
+    /// `Some(Some(body))` on a hit, `Some(None)` if the key is something else, `None` if
+    /// the index does not know the path.
+    fn indexed_body(&self, path: &str, tag: u8) -> Option<Option<&str>> {
+        let rec = self.locate_record(path)?;
+        Some((self.fields[rec] == tag).then(|| parser::resolve_slice(&self.data, &self.fields, rec + 9)))
     }
 
     /// Linear-scan equivalent of [`Template::locate_property`], kept as the reference
@@ -704,45 +724,87 @@ impl Template {
     }
 
     /// Queries all items from a list field using dot-notation or top-level key (e.g. `"inventory.items"`).
+    ///
+    /// Allocates the returned `Vec`; use [`Template::query_list_iter`] to avoid it.
     pub fn query_list(&self, path: &str) -> Option<Vec<&str>> {
-        if let Some((b, key)) = self.resolve_block_and_key(path) {
-            b.get_list(key)
-        } else {
-            self.get(path).and_then(|f| match f {
-                ParsedField::List { .. } => Some(f.list_items()),
-                _ => None,
-            })
+        self.query_list_iter(path).map(Iterator::collect)
+    }
+
+    /// Iterates the items of a list field without allocating.
+    ///
+    /// Resolved through the path index in O(depth), the items borrow from the document.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rost::Template;
+    ///
+    /// let doc = Template::parse("#inventory { items [sword, \"magic shield\", potion] }").unwrap();
+    /// let items: Vec<&str> = doc.query_list_iter("inventory.items").unwrap().collect();
+    /// assert_eq!(items, ["sword", "magic shield", "potion"]);
+    /// assert_eq!(doc.query_list_iter("inventory.items").unwrap().count(), 3);
+    /// assert!(doc.query_list_iter("inventory.missing").is_none());
+    /// ```
+    pub fn query_list_iter(&self, path: &str) -> Option<Items<'_>> {
+        match self.indexed_body(path, parser::TAG_LIST) {
+            Some(body) => body.map(Items::list),
+            None => {
+                let items = if let Some((b, key)) = self.resolve_block_and_key(path) {
+                    b.get_list(key)
+                } else {
+                    self.get(path).and_then(|f| match f {
+                        ParsedField::List { .. } => Some(f.list_items()),
+                        _ => None,
+                    })
+                };
+                items.map(Items::owned)
+            }
         }
     }
 
     /// Queries a specific element by index from a list field (e.g. `query_list_item("inventory.items", 0)`).
     pub fn query_list_item(&self, path: &str, index: usize) -> Option<&str> {
-        if let Some((b, key)) = self.resolve_block_and_key(path) {
-            b.get_list_item(key, index)
-        } else {
-            self.get(path).and_then(|f| f.list_item(index))
-        }
+        self.query_list_iter(path)?.nth(index)
     }
 
     /// Queries all variants from an enum field using dot-notation or top-level key (e.g. `"profile.status"`).
+    ///
+    /// Allocates the returned `Vec`; use [`Template::query_enum_iter`] to avoid it.
     pub fn query_enum(&self, path: &str) -> Option<Vec<&str>> {
-        if let Some((b, key)) = self.resolve_block_and_key(path) {
-            b.get_enum(key)
-        } else {
-            self.get(path).and_then(|f| match f {
-                ParsedField::Enum { .. } => Some(f.enum_variants()),
-                _ => None,
-            })
+        self.query_enum_iter(path).map(Iterator::collect)
+    }
+
+    /// Iterates the variants of an enum field without allocating.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rost::Template;
+    ///
+    /// let doc = Template::parse("#profile { status | active, away, offline | }").unwrap();
+    /// let variants: Vec<&str> = doc.query_enum_iter("profile.status").unwrap().collect();
+    /// assert_eq!(variants, ["active", "away", "offline"]);
+    /// ```
+    pub fn query_enum_iter(&self, path: &str) -> Option<Items<'_>> {
+        match self.indexed_body(path, parser::TAG_ENUM) {
+            Some(body) => body.map(Items::variants),
+            None => {
+                let variants = if let Some((b, key)) = self.resolve_block_and_key(path) {
+                    b.get_enum(key)
+                } else {
+                    self.get(path).and_then(|f| match f {
+                        ParsedField::Enum { .. } => Some(f.enum_variants()),
+                        _ => None,
+                    })
+                };
+                variants.map(Items::owned)
+            }
         }
     }
 
     /// Queries a specific variant by index from an enum field (e.g. `query_enum_variant("profile.status", 0)`).
     pub fn query_enum_variant(&self, path: &str, index: usize) -> Option<&str> {
-        if let Some((b, key)) = self.resolve_block_and_key(path) {
-            b.get_enum_variant(key, index)
-        } else {
-            self.get(path).and_then(|f| f.enum_variant(index))
-        }
+        self.query_enum_iter(path)?.nth(index)
     }
 
     /// Saves the current template buffer back to disk.
