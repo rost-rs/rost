@@ -8,7 +8,8 @@
 //! Blocks are [`Map`]s that keep their entries in document order, so a file read into a
 //! `Value` and written back keeps its layout.
 
-use std::collections::HashMap;
+use std::hash::BuildHasher;
+use std::sync::OnceLock;
 use std::fmt;
 use std::ops::{Index, IndexMut};
 
@@ -16,6 +17,7 @@ use serde::de::{self, Deserializer, IntoDeserializer, MapAccess, SeqAccess, Visi
 use serde::ser::{Serialize, SerializeMap, SerializeSeq, Serializer};
 
 use crate::de::{DeError, MapEnum};
+use crate::index::{finish, mix_segment, PreHashedMap};
 
 /// Any `.rost` value.
 ///
@@ -561,7 +563,35 @@ const INDEX_THRESHOLD: usize = 16;
 #[derive(Clone, Default)]
 pub struct Map {
     entries: Vec<(String, Value)>,
-    index: Option<HashMap<String, usize>>,
+    index: Option<Box<KeyIndex>>,
+}
+
+/// Positions of the entries by 64-bit key hash. The keys themselves stay in `entries`:
+/// a hit is confirmed by comparing the key, and the rare entries whose hash is already
+/// taken by another key are kept in `overflow`.
+#[derive(Clone, Default)]
+struct KeyIndex {
+    slots: PreHashedMap<u32>,
+    overflow: Vec<u32>,
+}
+
+impl KeyIndex {
+    fn add(&mut self, hash: u64, position: usize) {
+        match self.slots.entry(hash) {
+            std::collections::hash_map::Entry::Vacant(slot) => {
+                slot.insert(position as u32);
+            }
+            std::collections::hash_map::Entry::Occupied(_) => self.overflow.push(position as u32),
+        }
+    }
+}
+
+/// Hashes a key with a per-process random seed, so colliding keys cannot be prepared in
+/// advance to slow a map down.
+fn key_hash(key: &str) -> u64 {
+    static SEED: OnceLock<u64> = OnceLock::new();
+    let seed = *SEED.get_or_init(|| std::collections::hash_map::RandomState::new().hash_one(0x5EED_u64));
+    finish(mix_segment(seed, key.as_bytes()))
 }
 
 impl Map {
@@ -578,10 +608,14 @@ impl Map {
     }
 
     fn position(&self, key: &str) -> Option<usize> {
-        match &self.index {
-            Some(index) => index.get(key).copied(),
-            None => self.entries.iter().position(|(k, _)| k == key),
+        let Some(index) = &self.index else {
+            return self.entries.iter().position(|(k, _)| k == key);
+        };
+        let first = *index.slots.get(&key_hash(key))? as usize;
+        if self.entries[first].0 == key {
+            return Some(first);
         }
+        index.overflow.iter().map(|&i| i as usize).find(|&i| self.entries[i].0 == key)
     }
 
     pub fn get(&self, key: &str) -> Option<&Value> {
@@ -603,7 +637,7 @@ impl Map {
             return Some(std::mem::replace(&mut self.entries[i].1, value));
         }
         if let Some(index) = &mut self.index {
-            index.insert(key.clone(), self.entries.len());
+            index.add(key_hash(&key), self.entries.len());
         }
         self.entries.push((key, value));
         if self.index.is_none() && self.entries.len() > INDEX_THRESHOLD {
@@ -635,7 +669,12 @@ impl Map {
     }
 
     fn reindex(&mut self) {
-        self.index = Some(self.entries.iter().enumerate().map(|(i, (k, _))| (k.clone(), i)).collect());
+        let mut index = KeyIndex::default();
+        index.slots.reserve(self.entries.len());
+        for (i, (k, _)) in self.entries.iter().enumerate() {
+            index.add(key_hash(k), i);
+        }
+        self.index = Some(Box::new(index));
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (&String, &Value)> {
@@ -809,4 +848,23 @@ macro_rules! __rost_entry {
     ($map:ident ($key:expr) ($($value:tt)+)) => {
         $map.insert($key, $crate::rost!($($value)+));
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn colliding_hashes_fall_back_to_overflow() {
+        let mut map: Map = (0..20).map(|i| (format!("k{i}"), i)).collect();
+        // Simulate a collision: "k7" now shares its slot with "k3", so it lives in overflow.
+        let index = map.index.as_mut().unwrap();
+        index.slots.insert(key_hash("k7"), 3);
+        index.overflow.push(7);
+        assert_eq!(map.get("k7"), Some(&Value::Int(7)));
+        assert_eq!(map.get("k3"), Some(&Value::Int(3)));
+        assert_eq!(map.insert("k7", Value::Null), Some(Value::Int(7)));
+        assert_eq!(map.len(), 20);
+        assert!(map.get("k20").is_none());
+    }
 }

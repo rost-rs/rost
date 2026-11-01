@@ -41,7 +41,7 @@ struct Chain {
     last: u32,
 }
 
-type PreHashedMap<V> = HashMap<u64, V, BuildHasherDefault<PreHashed>>;
+pub(crate) type PreHashedMap<V> = HashMap<u64, V, BuildHasherDefault<PreHashed>>;
 
 /// Resolves dot paths to property records. See the [module docs](self).
 #[derive(Debug, Clone, Default)]
@@ -232,7 +232,7 @@ const K: u64 = 0x9E37_79B9_7F4A_7C15;
 
 /// Folds one path segment into a running path hash, 8 bytes at a time.
 #[inline]
-fn mix_segment(mut h: u64, bytes: &[u8]) -> u64 {
+pub(crate) fn mix_segment(mut h: u64, bytes: &[u8]) -> u64 {
     let (chunks, rest) = bytes.as_chunks::<8>();
     for chunk in chunks {
         h = folded_multiply(h ^ u64::from_le_bytes(*chunk), K);
@@ -255,13 +255,13 @@ fn folded_multiply(a: u64, b: u64) -> u64 {
 
 /// Final avalanche so every bit of the table hash depends on the whole path.
 #[inline]
-fn finish(h: u64) -> u64 {
+pub(crate) fn finish(h: u64) -> u64 {
     folded_multiply(h, 0xFF51_AFD7_ED55_8CCD)
 }
 
 /// Hasher for keys that are already well-mixed `u64` hashes.
 #[derive(Default)]
-struct PreHashed(u64);
+pub(crate) struct PreHashed(u64);
 
 impl Hasher for PreHashed {
     fn finish(&self) -> u64 {
