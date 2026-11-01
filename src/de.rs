@@ -6,7 +6,7 @@
 
 use std::fmt;
 use serde::de::value::BorrowedStrDeserializer;
-use serde::de::{self, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
+use serde::de::{self, DeserializeSeed, Deserializer, MapAccess, Visitor};
 
 use super::parser::*;
 use super::query::BlockView;
@@ -35,8 +35,7 @@ fn strip_hash(s: &str) -> &str {
     s.strip_prefix('#').unwrap_or(s)
 }
 use super::field::{
-    parse_fast_f32, parse_fast_f64, parse_fast_u32, parse_plain_int, unescape, unquote, QuoteStyle,
-    TopLevelSplit,
+    parse_fast_f32, parse_fast_f64, parse_fast_u32, parse_plain_int, unescape, QuoteStyle,
 };
 use std::borrow::Cow;
 
@@ -224,36 +223,18 @@ impl<'de> Deserializer<'de> for RawListDeserializer<'de> {
 
     #[inline]
     fn deserialize_seq<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
-        let clean = self.raw.trim().trim_start_matches('[').trim_end_matches(']');
-        let items: Vec<&'de str> = TopLevelSplit::new(clean, |b| b == b',').collect();
-        visitor.visit_seq(RawSeqAccess { items, idx: 0 })
+        crate::text::visit_list_body(self.raw, visitor)
+    }
+
+    #[inline]
+    fn deserialize_option<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
+        visitor.visit_some(self)
     }
 
     serde::forward_to_deserialize_any! {
         bool i8 i16 i32 i64 u8 u16 u32 u64 f32 f64 char str string
-        bytes byte_buf option unit unit_struct newtype_struct tuple
+        bytes byte_buf unit unit_struct newtype_struct tuple
         tuple_struct map struct enum identifier ignored_any
-    }
-}
-
-struct RawSeqAccess<'a> {
-    items: Vec<&'a str>,
-    idx: usize,
-}
-
-impl<'de> SeqAccess<'de> for RawSeqAccess<'de> {
-    type Error = DeError;
-
-    fn next_element_seed<T: DeserializeSeed<'de>>(&mut self, seed: T) -> Result<Option<T::Value>, Self::Error> {
-        if self.idx >= self.items.len() {
-            return Ok(None);
-        }
-        let item = self.items[self.idx];
-        self.idx += 1;
-        // Items are typed like property values: `1` is a number, `"1"` a string.
-        let inner = unquote(item);
-        let quote = if inner.len() == item.len() { QuoteStyle::Bare } else { QuoteStyle::Quoted };
-        seed.deserialize(FieldDeserializer { name: "list item", value: inner, quote }).map(Some)
     }
 }
 

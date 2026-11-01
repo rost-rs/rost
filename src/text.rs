@@ -12,9 +12,9 @@
 
 use memchr::{memchr, memchr2};
 use serde::de::value::BorrowedStrDeserializer;
-use serde::de::{self, DeserializeSeed, Deserializer, IgnoredAny, MapAccess, Visitor};
+use serde::de::{self, DeserializeSeed, Deserializer, IgnoredAny, MapAccess, SeqAccess, Visitor};
 
-use crate::de::{DeError, FieldDeserializer, RawListDeserializer};
+use crate::de::{DeError, FieldDeserializer};
 use crate::field::QuoteStyle;
 use crate::parser::{find_list_end, find_unescaped_quote, find_value_end, trim_trailing_ws, IS_DELIM_OR_WS, RAW_QUOTE};
 
@@ -47,7 +47,7 @@ use crate::parser::{find_list_end, find_unescaped_quote, find_value_end, trim_tr
 /// assert_eq!((config.window.width, config.window.scale), (1280, 1.25));
 /// ```
 pub fn from_str<'de, T: de::Deserialize<'de>>(src: &'de str) -> Result<T, DeError> {
-    let mut parser = Parser { src, bytes: src.as_bytes(), pos: 0 };
+    let mut parser = Parser { src, bytes: src.as_bytes(), pos: 0, locate: true };
     let value = T::deserialize(Root { p: &mut parser })?;
     parser.skip_trivia();
     if parser.pos < parser.bytes.len() {
@@ -162,12 +162,17 @@ struct Parser<'de> {
     src: &'de str,
     bytes: &'de [u8],
     pos: usize,
+    /// Prefix errors with `line:col`; off when `src` is a fragment of a larger document.
+    locate: bool,
 }
 
 impl<'de> Parser<'de> {
     /// Builds an error located at the current position.
     #[cold]
     fn error(&self, msg: &str) -> DeError {
+        if !self.locate {
+            return DeError(msg.to_string());
+        }
         let at = self.pos.min(self.bytes.len());
         let before = &self.bytes[..at];
         let line = memchr::Memchr::new(b'\n', before).count() + 1;
@@ -301,14 +306,43 @@ impl<'de> Parser<'de> {
         }
     }
 
-    /// Reads a list body after `[`, up to its matching `]`.
-    fn read_list(&mut self) -> Result<&'de str, DeError> {
+    /// Reads a scalar list item: a quoted string, or a bare token up to the next `,` or
+    /// `]` outside parentheses and brackets (so `rgb(1, 2, 3)` is one item).
+    fn read_item(&mut self) -> Result<(&'de str, QuoteStyle), DeError> {
+        let bytes = self.bytes;
         let start = self.pos;
-        let Some(end) = find_list_end(self.bytes, start) else {
-            return Err(self.error("unterminated list: missing closing `]`"));
-        };
-        self.pos = end + 1;
-        Ok(&self.src[start..end])
+        if bytes.get(start) == Some(&b'"') {
+            let item = self.read_scalar()?;
+            let next = skip_inline_ws(bytes, self.pos);
+            match bytes.get(next) {
+                None | Some(b',' | b']' | b'\n' | b'\r' | b';') => {}
+                Some(b'/') if bytes.get(next + 1) == Some(&b'/') => {}
+                _ => {
+                    self.pos = next;
+                    return Err(self.error("expected `,` or `]` after a list item"));
+                }
+            }
+            return Ok(item);
+        }
+        let mut depth = 0u32;
+        let mut i = start;
+        while let Some(&b) = bytes.get(i) {
+            match b {
+                b'(' | b'[' | b'{' => depth += 1,
+                b')' | b'}' => depth = depth.saturating_sub(1),
+                b']' | b',' if depth == 0 => break,
+                b']' => depth -= 1,
+                b'"' => {
+                    if let Some(end) = find_unescaped_quote(&bytes[i + 1..]) {
+                        i += end + 1;
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        self.pos = i;
+        Ok((&self.src[start..start + trim_trailing_ws(bytes, start, i)], QuoteStyle::Bare))
     }
 
     /// Reads an enum body after `|`, up to the closing `|`.
@@ -504,10 +538,7 @@ impl<'de> MapAccess<'de> for Entries<'_, 'de> {
         match self.pending.take() {
             Some(Pending::Scalar) => seed.deserialize(Scalar { p: &mut *self.p, key: self.key }),
             Some(Pending::Block) => seed.deserialize(Block { p: &mut *self.p, root: false }),
-            Some(Pending::List) => {
-                let raw = self.p.read_list()?;
-                seed.deserialize(RawListDeserializer { raw })
-            }
+            Some(Pending::List) => seed.deserialize(List { p: &mut *self.p }),
             Some(Pending::Enum) => {
                 // Like `from_template`: an enum field deserializes as its first variant.
                 let body = self.p.read_enum()?;
@@ -577,6 +608,95 @@ impl<'de> Deserializer<'de> for Block<'_, 'de> {
         bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
         bytes byte_buf unit unit_struct newtype_struct seq tuple
         tuple_struct map struct enum identifier
+    }
+}
+
+/// Deserializes a list body (the text between `[` and `]`) with the same item rules as
+/// [`from_str`]. Used by the bytecode path, whose list records store the raw body.
+pub(crate) fn visit_list_body<'de, V: Visitor<'de>>(raw: &'de str, visitor: V) -> Result<V::Value, DeError> {
+    let mut parser = Parser { src: raw, bytes: raw.as_bytes(), pos: 0, locate: false };
+    visit_items(&mut parser, visitor)
+}
+
+/// Visits the items of a list body that runs to the end of `p`'s input.
+fn visit_items<'de, V: Visitor<'de>>(p: &mut Parser<'de>, visitor: V) -> Result<V::Value, DeError> {
+    let mut items = Items { p, done: false };
+    let value = visitor.visit_seq(&mut items)?;
+    // A visitor may stop early (tuples, fixed arrays): the rest must not be left unread.
+    if items.next_element::<IgnoredAny>()?.is_some() {
+        return Err(items.p.error("list has more items than expected"));
+    }
+    Ok(value)
+}
+
+/// A list value after its `[`.
+///
+/// The body is delimited first with the bytecode parser's own scanner, then its items
+/// are read inside those bounds, so both paths agree on where every list ends.
+struct List<'a, 'de> {
+    p: &'a mut Parser<'de>,
+}
+
+impl<'de> Deserializer<'de> for List<'_, 'de> {
+    type Error = DeError;
+
+    fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, DeError> {
+        let p = self.p;
+        let Some(end) = find_list_end(p.bytes, p.pos) else {
+            return Err(p.error("unterminated list: missing closing `]`"));
+        };
+        // Truncating the input keeps positions absolute for error messages.
+        let mut body = Parser { src: &p.src[..end], bytes: &p.bytes[..end], pos: p.pos, locate: p.locate };
+        let value = visit_items(&mut body, visitor)?;
+        p.pos = end + 1;
+        Ok(value)
+    }
+
+    fn deserialize_option<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, DeError> {
+        visitor.visit_some(self)
+    }
+
+    serde::forward_to_deserialize_any! {
+        bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
+        bytes byte_buf unit unit_struct newtype_struct seq tuple
+        tuple_struct map struct enum identifier ignored_any
+    }
+}
+
+/// The items of a list body: scalars, inline blocks `{ … }` and nested lists `[ … ]`.
+struct Items<'a, 'de> {
+    p: &'a mut Parser<'de>,
+    done: bool,
+}
+
+impl<'de> SeqAccess<'de> for Items<'_, 'de> {
+    type Error = DeError;
+
+    fn next_element_seed<T: DeserializeSeed<'de>>(&mut self, seed: T) -> Result<Option<T::Value>, DeError> {
+        if self.done {
+            return Ok(None);
+        }
+        let p = &mut *self.p;
+        p.skip_trivia();
+        match p.peek() {
+            None => {
+                self.done = true;
+                Ok(None)
+            }
+            Some(b']') => Err(p.error("unexpected `]` in list")),
+            Some(b'{') => {
+                p.pos += 1;
+                seed.deserialize(Block { p, root: false }).map(Some)
+            }
+            Some(b'[') => {
+                p.pos += 1;
+                seed.deserialize(List { p }).map(Some)
+            }
+            Some(_) => {
+                let (value, quote) = p.read_item()?;
+                seed.deserialize(FieldDeserializer { name: "list item", value, quote }).map(Some)
+            }
+        }
     }
 }
 

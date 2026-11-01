@@ -1156,3 +1156,46 @@ fn test_from_str_list_skips_brackets_inside_strings() {
     let doc: Doc = rost::from_str("tags [\"a]b\", \"[\", c]\nafter: 1\n").unwrap();
     assert_eq!(doc, Doc { tags: vec!["a]b".into(), "[".into(), "c".into()], after: 1 });
 }
+
+#[cfg(feature = "serde")]
+#[test]
+fn test_serde_lists_of_blocks_and_nested_lists() {
+    use serde::Deserialize;
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct Item<'a> {
+        id: u32,
+        name: &'a str,
+        #[serde(default)]
+        tags: Vec<String>,
+    }
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct Doc<'a> {
+        #[serde(borrow)]
+        items: Vec<Item<'a>>,
+        grid: Vec<Vec<u8>>,
+        pair: (u32, String),
+        maybe: Option<Vec<f64>>,
+    }
+
+    let src = "items [\n    { id: 1, name: \"a]b\" },\n    {\n        id: 2\n        name: \"c\"\n        tags [x, \"y, z\"]\n    },\n]\ngrid [[1, 2], [], [3]]\npair [7, \"seven\"]\nmaybe [0.5]\n";
+    let expected = Doc {
+        items: vec![
+            Item { id: 1, name: "a]b", tags: vec![] },
+            Item { id: 2, name: "c", tags: vec!["x".into(), "y, z".into()] },
+        ],
+        grid: vec![vec![1, 2], vec![], vec![3]],
+        pair: (7, "seven".into()),
+        maybe: Some(vec![0.5]),
+    };
+    assert_eq!(rost::from_str::<Doc>(src).unwrap(), expected);
+    let template = Template::parse(src).unwrap();
+    assert_eq!(rost::from_template::<Doc>(&template).unwrap(), expected);
+
+    // A fixed-size target must not silently drop extra items.
+    let err = rost::from_str::<Doc>(&src.replace("pair [7, \"seven\"]", "pair [7, \"seven\", 8]")).unwrap_err();
+    assert!(err.to_string().ends_with("list has more items than expected"), "{err}");
+    let err = rost::from_str::<Doc>(&src.replace("pair [7, \"seven\"]", "pair [7, \"seven\" x]")).unwrap_err();
+    assert_eq!(err.to_string(), "10:18: expected `,` or `]` after a list item");
+}
