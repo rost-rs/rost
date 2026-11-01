@@ -10,6 +10,14 @@ use std::ops::Range;
 
 use crate::error::{ParseError, ParseErrorKind};
 
+/// Largest document the bytecode can address: offsets and lengths are little-endian `u32`.
+///
+/// The strict entry points ([`parse_with_diagnostics`], `Template::parse`) report
+/// [`ParseErrorKind::TooLarge`] beyond it; the lenient ones panic with a clear message
+/// instead of silently wrapping offsets. `rost::from_str` does not use the bytecode and
+/// has no such limit.
+pub const MAX_DOCUMENT_LEN: usize = u32::MAX as usize;
+
 /// Delimiter of raw multi-line strings (`"""..."""`).
 pub(crate) const RAW_QUOTE: &[u8] = b"\"\"\"";
 
@@ -104,6 +112,10 @@ const WS_LUT: [u8; 256] = {
 /// assert!(!bytecode.is_empty());
 /// ```
 pub fn parse_into_bytecode(raw: &[u8]) -> Vec<u8> {
+    assert!(
+        raw.len() <= MAX_DOCUMENT_LEN,
+        "rost documents are limited to 4 GiB: bytecode offsets are u32"
+    );
     scan(raw, &mut NoDiagnostics)
 }
 
@@ -122,6 +134,16 @@ pub fn parse_into_bytecode(raw: &[u8]) -> Vec<u8> {
 /// assert_eq!(errors[0].to_string(), "1:8: unterminated string literal");
 /// ```
 pub fn parse_with_diagnostics(raw: &[u8]) -> (Vec<u8>, Vec<ParseError>) {
+    parse_with_limit(raw, MAX_DOCUMENT_LEN)
+}
+
+/// [`parse_with_diagnostics`] with an explicit size limit, so the limit itself is testable
+/// without allocating 4 GiB.
+fn parse_with_limit(raw: &[u8], max_len: usize) -> (Vec<u8>, Vec<ParseError>) {
+    if raw.len() > max_len {
+        let err = ParseError::new(ParseErrorKind::TooLarge, &[], 0..0);
+        return (Vec::new(), vec![err]);
+    }
     let mut found = Vec::new();
     let fields = scan(raw, &mut found);
     let errors = found
@@ -1041,4 +1063,20 @@ pub(crate) fn find_unescaped_quote(slice: &[u8]) -> Option<usize> {
         return Some(abs_pos);
     }
     None
+}
+
+#[cfg(test)]
+mod size_limit_tests {
+    use super::*;
+
+    #[test]
+    fn documents_over_the_limit_are_rejected_not_wrapped() {
+        let (fields, errors) = parse_with_limit(b"a: 1\nb: 2\n", 5);
+        assert!(fields.is_empty());
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].kind, ParseErrorKind::TooLarge);
+
+        let (fields, errors) = parse_with_limit(b"a: 1\n", 5);
+        assert!(!fields.is_empty() && errors.is_empty());
+    }
 }

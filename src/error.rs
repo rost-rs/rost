@@ -28,6 +28,8 @@ pub enum ParseErrorKind {
     DuplicateKey(String),
     /// The input is not strict RFC 8259 JSON (see [`crate::json`]).
     InvalidJson(&'static str),
+    /// The document is longer than [`crate::parser::MAX_DOCUMENT_LEN`] (offsets are `u32`).
+    TooLarge,
 }
 
 impl fmt::Display for ParseErrorKind {
@@ -44,6 +46,7 @@ impl fmt::Display for ParseErrorKind {
             Self::ExpectedKey => f.write_str("expected a key"),
             Self::DuplicateKey(key) => write!(f, "duplicate key `{key}` in the same scope"),
             Self::InvalidJson(msg) => write!(f, "invalid JSON: {msg}"),
+            Self::TooLarge => f.write_str("document is larger than 4 GiB, the limit of the u32 offsets"),
         }
     }
 }
