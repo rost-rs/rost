@@ -57,11 +57,21 @@ cat >"$dir/Cargo.toml" <<EOF
 name = "rost-demo"
 version = "0.1.0"
 edition = "2024"
+default-run = "rost-demo"
 
 [dependencies]
 $dep
 ratatui = "0.30"
 serde = { version = "1", features = ["derive"] }
+
+# The same app without rost, to compare: cargo run --bin vanilla
+[[bin]]
+name = "vanilla"
+path = "src/main_vanilla.rs"
+
+[[bin]]
+name = "rost-demo"
+path = "src/main.rs"
 EOF
 
 cat >"$dir/app.rost" <<'EOF'
@@ -779,9 +789,159 @@ fn set_theme(name: &str) {
 }
 EOF
 
+cat >"$dir/src/main_vanilla.rs" <<'EOF'
+//! The same terminal app as main.rs, written without rost: ratatui only.
+//! Layout, sizes, colors, texts, keys and themes are hard-coded. No files are read,
+//! so nothing reloads while it runs: edit this file and recompile to change anything.
+//!
+//!     cargo run --bin vanilla
+
+use std::time::{Duration, Instant};
+
+use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use ratatui::layout::{Alignment, Constraint, Layout};
+use ratatui::style::{Color, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, BorderType, Gauge, List, Paragraph, Wrap};
+use ratatui::Frame;
+
+struct Theme {
+    id: &'static str,
+    name: &'static str,
+    bg: u32,
+    fg: u32,
+    accent: u32,
+    muted: u32,
+    border: u32,
+}
+
+const THEMES: [Theme; 3] = [
+    Theme { id: "dark", name: "Dark", bg: 0x1e1e2e, fg: 0xcdd6f4, accent: 0x89b4fa, muted: 0x6c7086, border: 0x45475a },
+    Theme { id: "light", name: "Light", bg: 0xeff1f5, fg: 0x4c4f69, accent: 0x1e66f5, muted: 0x8c8fa1, border: 0xacb0be },
+    Theme { id: "solarized", name: "Solarized", bg: 0x002b36, fg: 0x93a1a1, accent: 0xb58900, muted: 0x586e75, border: 0x073642 },
+];
+
+const TIPS: [&str; 6] = [
+    "Change the 60% of this panel to 30%",
+    "Set the border to BorderType::Double",
+    "Add a Paragraph anywhere in draw()",
+    "Set `help` to false, or press h",
+    "Rename a widget: the compiler tells you where",
+    "Press 1, 2 or 3, or t: the theme index changes",
+];
+
+fn rgb(c: u32) -> Color {
+    Color::Rgb((c >> 16) as u8, (c >> 8) as u8, c as u8)
+}
+
+fn panel<'a>(title: String, t: &Theme, kind: BorderType, color: u32) -> Block<'a> {
+    Block::bordered()
+        .border_type(kind)
+        .border_style(Style::new().fg(rgb(color)))
+        .title(Span::styled(title, Style::new().fg(rgb(t.accent)).bold()))
+}
+
+fn draw(f: &mut Frame, t: &Theme, help: bool, started: Instant) {
+    f.render_widget(Block::new().style(Style::new().bg(rgb(t.bg)).fg(rgb(t.fg))), f.area());
+    let body_style = Style::new().fg(rgb(t.fg));
+    let muted = Style::new().fg(rgb(t.muted));
+    let secs = started.elapsed().as_secs();
+
+    let mut rows = vec![Constraint::Length(3), Constraint::Fill(1)];
+    if help {
+        rows.push(Constraint::Length(5));
+    }
+    rows.extend([Constraint::Length(4), Constraint::Length(1)]);
+    let areas = Layout::vertical(rows).split(f.area());
+    let (header, body, status, keys) = (areas[0], areas[1], areas[areas.len() - 2], areas[areas.len() - 1]);
+
+    // header
+    let frame = panel("rost".into(), t, BorderType::Rounded, t.border);
+    let inner = frame.inner(header);
+    f.render_widget(frame, header);
+    let [left, right] = Layout::horizontal([Constraint::Fill(1), Constraint::Length(34)]).areas(inner);
+    f.render_widget(Paragraph::new("rost live demo").style(Style::new().fg(rgb(t.accent)).bold()).wrap(Wrap { trim: true }), left);
+    f.render_widget(
+        Paragraph::new(format!("theme {}  ·  up {:02}:{:02}", t.name, secs / 60, secs % 60)).style(muted).alignment(Alignment::Right).wrap(Wrap { trim: true }),
+        right,
+    );
+
+    // body: tips on the left, palette and gauge on the right
+    let [tips, side] = Layout::horizontal([Constraint::Percentage(60), Constraint::Fill(1)]).spacing(1).areas(body);
+    let frame = panel(format!("try this in the code  ({}x{})", tips.width, tips.height), t, BorderType::Plain, t.accent);
+    let inner = frame.inner(tips);
+    f.render_widget(frame, tips);
+    f.render_widget(List::new(TIPS.iter().map(|s| format!("▸ {s}"))).style(body_style), inner);
+
+    let [colors, activity] = Layout::vertical([Constraint::Min(7), Constraint::Length(3)]).areas(side);
+    let frame = panel(format!("themes/{}.rost", t.id), t, BorderType::Plain, t.border);
+    let inner = frame.inner(colors);
+    f.render_widget(frame, colors);
+    let swatch = |label: &str, c: u32| Line::from(vec![Span::styled("   ", Style::new().bg(rgb(c))), Span::styled(format!(" {label:<7}#{c:06x}"), muted)]);
+    f.render_widget(
+        Paragraph::new(vec![swatch("bg", t.bg), swatch("fg", t.fg), swatch("accent", t.accent), swatch("muted", t.muted), swatch("border", t.border)]),
+        inner,
+    );
+    let frame = panel("activity".into(), t, BorderType::Plain, t.border);
+    let inner = frame.inner(activity);
+    f.render_widget(frame, activity);
+    let phase = started.elapsed().as_millis() % 4000;
+    let pct = (if phase < 2000 { phase } else { 4000 - phase }) as f64 / 20.0;
+    f.render_widget(
+        Gauge::default().ratio(pct / 100.0).label(format!("{pct:.0}%")).gauge_style(Style::new().fg(rgb(t.accent)).bg(rgb(t.border))),
+        inner,
+    );
+
+    // help (toggled with h)
+    if help {
+        let area = areas[2];
+        let frame = panel("help".into(), t, BorderType::Double, t.muted);
+        let inner = frame.inner(area);
+        f.render_widget(frame, area);
+        f.render_widget(Paragraph::new("dark, light, solarized: everything here lives in main_vanilla.rs and is fixed at compile time.").style(muted).wrap(Wrap { trim: true }), inner);
+    }
+
+    // status and key legend
+    let frame = panel("status".into(), t, BorderType::Plain, t.border);
+    let inner = frame.inner(status);
+    f.render_widget(frame, status);
+    f.render_widget(Paragraph::new(vec![Line::from("✓ built in: no files to watch"), Line::from("✓ no validation: the compiler checks it")]).style(muted), inner);
+    f.render_widget(Paragraph::new("q quit   t next theme   1 dark   2 light   3 solarized   h help").style(muted), keys);
+}
+
+fn main() -> std::io::Result<()> {
+    let started = Instant::now();
+    let (mut theme, mut help) = (0, true);
+    let mut terminal = ratatui::init();
+    let result = loop {
+        if let Err(e) = terminal.draw(|f| draw(f, &THEMES[theme], help, started)) {
+            break Err(e);
+        }
+        if event::poll(Duration::from_millis(100))?
+            && let Event::Key(key) = event::read()?
+            && key.kind == KeyEventKind::Press
+        {
+            match key.code {
+                KeyCode::Char('q') => break Ok(()),
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break Ok(()),
+                KeyCode::Char('t') => theme = (theme + 1) % THEMES.len(),
+                KeyCode::Char('1') => theme = 0,
+                KeyCode::Char('2') => theme = 1,
+                KeyCode::Char('3') => theme = 2,
+                KeyCode::Char('h') => help = !help,
+                _ => {}
+            }
+        }
+    };
+    ratatui::restore();
+    result
+}
+EOF
+
 echo "rost demo: building $dir (first build downloads the crates)"
 (cd "$dir" && cargo build --quiet)
 echo
-echo "Ready. Start it with:   cd $dir && cargo run"
+echo "Ready. Start it with:   cd $dir && cargo run                (with rost)"
+echo "                          cd $dir && cargo run --bin vanilla   (same app, no rost)"
 echo "Then edit themes/*.rost or app.rost in another terminal and watch the screen."
 [ "$run" -eq 0 ] || { cd "$dir" && exec cargo run --quiet; }

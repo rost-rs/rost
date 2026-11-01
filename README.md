@@ -69,6 +69,9 @@ Edit the files in another terminal while the app runs:
 - rebind a key in the `keys` list of `app.rost` and the new key works at once;
 - `--set title=hello` or `DEMO_TITLE=hello` override `app.rost` without editing it.
 
+The generated project also has `src/main_vanilla.rs`: the same screen written without rost, to compare
+(`cargo run --bin vanilla`). A step by step guide is in [`docs/TUTORIAL.md`](docs/TUTORIAL.md).
+
 Outside a checkout the script uses the released tag from git; `ROST_PATH=/path/to/rost` forces a local copy.
 CI generates the demo and drives its terminal UI in a pseudo-terminal (`scripts/demo-test.py`, 24 checks on
 what reaches the screen).
