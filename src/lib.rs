@@ -82,6 +82,7 @@
 //! assert_eq!(dim.unit, "px");
 //! ```
 
+pub mod block;
 pub mod error;
 pub mod field;
 mod index;
@@ -104,6 +105,7 @@ mod text;
 pub mod value;
 
 pub use error::{ParseError, ParseErrorKind};
+pub use block::{Block, BlockFields, RootBlocks};
 pub use field::{Dimension, Items, ParsedField, QuoteStyle, Scalar};
 pub use malleable::{MalleablePatcher, RostBuilder};
 pub use query::{parse_blocks, BlockView, FieldIter};
@@ -361,24 +363,28 @@ impl Template {
     }
 
     /// Finds a specific block by its selector or name (e.g., `#button.primary` or `avatar`).
+    ///
+    /// Resolved through the path index; only the fields of the block found are copied.
+    /// Use [`Template::block`] to navigate without copying anything.
     pub fn find_block(&self, selector: &str) -> Option<BlockView<'_>> {
-        let clean = selector.strip_prefix('#').unwrap_or(selector);
-        self.blocks().into_iter().find(|b| {
-            let b_clean = b.name.strip_prefix('#').unwrap_or(b.name);
-            if b.name == selector || b_clean == clean {
-                return true;
-            }
-            if let Some(parent) = b.parent {
-                let p_clean = parent.strip_prefix('#').unwrap_or(parent);
-                if clean.starts_with(p_clean)
-                    && clean[p_clean.len()..].starts_with('.')
-                    && &clean[p_clean.len() + 1..] == b_clean
-                {
-                    return true;
-                }
-            }
-            false
-        })
+        self.block(selector).map(|b| b.to_view())
+    }
+
+    /// Finds a block by selector like [`Template::find_block`], as a [`Block`] handle that
+    /// reads straight from the bytecode: no allocation, and `parent`, `children` and
+    /// `next_sibling` are O(1).
+    pub fn block(&self, selector: &str) -> Option<Block<'_>> {
+        let rec = self.path_index().find_block(&self.data, &self.fields, selector)?;
+        Some(Block::new(&self.data, &self.fields, rec))
+    }
+
+    /// The blocks written at the top level of the document, in order.
+    pub fn root_blocks(&self) -> RootBlocks<'_> {
+        RootBlocks { data: &self.data, fields: &self.fields, idx: 0 }
+    }
+
+    fn path_index(&self) -> &index::PathIndex {
+        self.index.get_or_init(|| index::PathIndex::build(&self.data, &self.fields))
     }
 
     /// Internal helper to resolve a dot-path into a [BlockView] and property key.
@@ -494,9 +500,7 @@ impl Template {
     /// Like [`Template::locate_property`] but for any property, list or enum record.
     pub(crate) fn locate_record(&self, path: &str) -> Option<usize> {
         let clean_path = path.strip_prefix('#').unwrap_or(path);
-        self.index
-            .get_or_init(|| index::PathIndex::build(&self.data, &self.fields))
-            .get(&self.data, &self.fields, clean_path)
+        self.path_index().get(&self.data, &self.fields, clean_path)
     }
 
     /// Looks `path` up in the index and returns the body of a record of kind `tag`:
@@ -529,7 +533,7 @@ impl Template {
                     }
                     parser::TAG_BLOCK_START => {
                         depth += 1;
-                        idx += parser::REC_NAMED;
+                        idx += parser::REC_BLOCK_START;
                     }
                     parser::TAG_BLOCK_END => {
                         depth = depth.saturating_sub(1);
@@ -566,7 +570,7 @@ impl Template {
                 parser::TAG_BLOCK_START => {
                     let name = parser::resolve_slice(&self.data, &self.fields, idx + 1);
                     let name_clean = name.strip_prefix('#').unwrap_or(name);
-                    idx += parser::REC_NAMED;
+                    idx += parser::REC_BLOCK_START;
                     if stack_depth < block_path.len() && stack_depth == matched_depth && name_clean == block_path[stack_depth] {
                         matched_depth += 1;
                     }

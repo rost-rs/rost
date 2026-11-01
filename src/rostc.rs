@@ -85,8 +85,11 @@ fn checksum(parts: &[&[u8]]) -> u64 {
 }
 
 /// Checks that walking `fields` is safe for a document `text`: whole records, known tags,
-/// every (offset, length) pair inside the text and on character boundaries.
+/// every (offset, length) pair inside the text and on character boundaries, and block tree
+/// links that point forward or backward to the right kind of record (so navigating them
+/// always terminates).
 fn validate_bytecode(text: &str, fields: &[u8]) -> bool {
+    let tag_at = |at: u32| fields.get(at as usize).copied();
     let mut idx = 0;
     while idx < fields.len() {
         let tag = fields[idx];
@@ -94,15 +97,33 @@ fn validate_bytecode(text: &str, fields: &[u8]) -> bool {
         if !(parser::TAG_TITLE..=parser::TAG_BLOCK_END).contains(&tag) || idx + len > fields.len() {
             return false;
         }
-        let pairs = match len {
-            parser::REC_BLOCK_END => 0,
-            parser::REC_NAMED => 1,
+        let pairs = match tag {
+            parser::TAG_BLOCK_END => 0,
+            parser::TAG_TITLE | parser::TAG_BLOCK_START => 1,
             _ => 2,
         };
         for p in 0..pairs {
             let off = read_u32(fields, idx + 1 + 8 * p) as usize;
             let end = off + read_u32(fields, idx + 5 + 8 * p) as usize;
             if end > text.len() || !text.is_char_boundary(off) || !text.is_char_boundary(end) {
+                return false;
+            }
+        }
+        if tag == parser::TAG_BLOCK_START {
+            let rec = idx as u32;
+            let link = |at: usize| read_u32(fields, idx + at);
+            let (parent, end, first, next) = (
+                link(parser::BLOCK_PARENT),
+                link(parser::BLOCK_END),
+                link(parser::BLOCK_FIRST_CHILD),
+                link(parser::BLOCK_NEXT_SIBLING),
+            );
+            let none = parser::NO_RECORD;
+            let ok = (parent == none || (parent < rec && tag_at(parent) == Some(parser::TAG_BLOCK_START)))
+                && (end == none || (end > rec && tag_at(end) == Some(parser::TAG_BLOCK_END)))
+                && (first == none || (first > rec && tag_at(first) == Some(parser::TAG_BLOCK_START)))
+                && (next == none || (next > rec && tag_at(next) == Some(parser::TAG_BLOCK_START)));
+            if !ok {
                 return false;
             }
         }
@@ -239,5 +260,26 @@ mod tests {
     #[test]
     fn invalid_utf8_is_rejected_despite_a_valid_checksum() {
         assert_eq!(Template::from_rostc(&forge(&[0xff, 0xfe], &[])).unwrap_err(), RostcError::InvalidUtf8);
+    }
+
+    #[test]
+    fn forged_block_links_that_could_loop_are_rejected() {
+        let doc = Template::parse_lenient("#a { #b { } }");
+        for (link, target) in [
+            (parser::BLOCK_NEXT_SIBLING, 0u32),   // a sibling that is the block itself
+            (parser::BLOCK_FIRST_CHILD, 0),       // a child that is the block itself
+            (parser::BLOCK_PARENT, 0),            // a parent that is the block itself
+            (parser::BLOCK_END, 1),               // an end that is not an end record
+            (parser::BLOCK_NEXT_SIBLING, 9999),   // outside the bytecode
+        ] {
+            let mut fields = doc.fields.clone();
+            fields[link..link + 4].copy_from_slice(&target.to_le_bytes());
+            assert_eq!(
+                Template::from_rostc(&forge(&doc.data, &fields)).unwrap_err(),
+                RostcError::InvalidBytecode,
+                "link at {link} -> {target}"
+            );
+        }
+        assert!(Template::from_rostc(&forge(&doc.data, &doc.fields)).is_ok());
     }
 }

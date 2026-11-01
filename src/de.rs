@@ -482,7 +482,7 @@ impl<'a> BytecodeStream<'a> {
             match tag {
                 TAG_BLOCK_START => {
                     depth += 1;
-                    self.idx += REC_NAMED;
+                    self.idx += REC_BLOCK_START;
                 }
                 TAG_BLOCK_END => {
                     depth -= 1;
@@ -607,7 +607,7 @@ impl<'de, 's> MapAccess<'de> for BlockMapStreamAccess<'de, 's> {
                 TAG_BLOCK_START => {
                     let name_at = self.stream.idx + 1;
                     let (raw, name) = resolve_key(self.stream.data, self.stream.bytes, name_at);
-                    self.stream.idx += REC_NAMED;
+                    self.stream.idx += REC_BLOCK_START;
                     // `#name {` selectors drop their `#`; a quoted key is taken literally.
                     let name_end = read_u32(self.stream.bytes, name_at) as usize + raw.len();
                     let clean = if self.stream.data.get(name_end) == Some(&b'"') { name } else { Cow::Borrowed(strip_hash(raw)) };
@@ -744,7 +744,7 @@ impl Template {
             let tag = self.fields[idx];
             if tag == TAG_BLOCK_START {
                 let name = resolve_slice(&self.data, &self.fields, idx + 1);
-                idx += REC_NAMED;
+                idx += REC_BLOCK_START;
                 if strip_hash(name) == clean {
                     found = true;
                     break;

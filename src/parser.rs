@@ -40,8 +40,18 @@ pub const TAG_BLOCK_START: u8 = 0x08;
 /// Tag identifier for block closures `}`.
 pub const TAG_BLOCK_END: u8 = 0x09;
 
-/// Byte length of a [`TAG_TITLE`] / [`TAG_BLOCK_START`] record: tag + name (offset, len) + line.
+/// Byte length of a [`TAG_TITLE`] record: tag + name (offset, len) + line.
 pub const REC_NAMED: usize = 13;
+/// Byte length of a [`TAG_BLOCK_START`] record: [`REC_NAMED`] plus the block tree links
+/// (parent, end, first child, next sibling), each a bytecode index or [`NO_RECORD`].
+pub const REC_BLOCK_START: usize = 29;
+/// Marks "no such record" in the block tree links of a [`TAG_BLOCK_START`] record.
+pub const NO_RECORD: u32 = u32::MAX;
+/// Offsets of the block tree links inside a [`TAG_BLOCK_START`] record.
+pub const BLOCK_PARENT: usize = 13;
+pub const BLOCK_END: usize = 17;
+pub const BLOCK_FIRST_CHILD: usize = 21;
+pub const BLOCK_NEXT_SIBLING: usize = 25;
 /// Byte length of a [`TAG_COMMON_TEXT`] / [`TAG_SUBTITLE`] / [`TAG_DIRECTIVE`] record:
 /// tag + name (offset, len) + value (offset, len) + line.
 pub const REC_PAIR: usize = 21;
@@ -59,7 +69,8 @@ pub const REC_BLOCK_END: usize = 5;
 #[inline(always)]
 pub const fn record_len(tag: u8) -> usize {
     match tag {
-        TAG_TITLE | TAG_BLOCK_START => REC_NAMED,
+        TAG_TITLE => REC_NAMED,
+        TAG_BLOCK_START => REC_BLOCK_START,
         TAG_COMMON_TEXT | TAG_SUBTITLE | TAG_DIRECTIVE => REC_PAIR,
         TAG_ENUM | TAG_LIST => REC_RANGE,
         TAG_VAR_FUNC => REC_BINDING,
@@ -309,6 +320,8 @@ fn scan<D: Diagnostics>(raw: &[u8], diag: &mut D) -> Vec<u8> {
     let mut i = start;
     let mut line: u32 = 1 + count_newlines(&raw[..start]);
 
+    let mut tree = BlockTree::new();
+
     // Name spans of currently open blocks; only tracked when diagnostics are enabled.
     let mut open_blocks: Vec<Range<usize>> = Vec::new();
     // Keys defined in each open scope (root first); only tracked when diagnostics are enabled.
@@ -350,6 +363,8 @@ fn scan<D: Diagnostics>(raw: &[u8], diag: &mut D) -> Vec<u8> {
                     diag.report(ParseErrorKind::UnexpectedCloseBrace, i..i + 1);
                 }
             }
+            let end_rec = fields.len();
+            tree.end(&mut fields, end_rec);
             emit_block_end(&mut fields, line);
             i += 1;
             continue;
@@ -375,7 +390,7 @@ fn scan<D: Diagnostics>(raw: &[u8], diag: &mut D) -> Vec<u8> {
                     open_blocks.push(start_name..start_name + name_len as usize);
                     scopes.open();
                 }
-                emit_block_start(&mut fields, name_off, name_len, line);
+                tree.start(&mut fields, name_off, name_len, line);
                 i += 1;
                 continue;
             }
@@ -457,7 +472,7 @@ fn scan<D: Diagnostics>(raw: &[u8], diag: &mut D) -> Vec<u8> {
                         open_blocks.push(start_name..start_name + name_len as usize);
                         scopes.open();
                     }
-                    emit_block_start(&mut fields, name_off, name_len, line);
+                    tree.start(&mut fields, name_off, name_len, line);
                     i = probe + 1;
                 } else {
                     emit_title(&mut fields, name_off, name_len, line);
@@ -525,7 +540,7 @@ fn scan<D: Diagnostics>(raw: &[u8], diag: &mut D) -> Vec<u8> {
                     open_blocks.push(key_start..key_start + key_len as usize);
                     scopes.open();
                 }
-                emit_block_start(&mut fields, key_off, key_len, line);
+                tree.start(&mut fields, key_off, key_len, line);
                 i += 1;
             }};
         }
@@ -757,8 +772,8 @@ fn emit_directive(buf: &mut Vec<u8>, name_off: u32, name_len: u32, val_off: u32,
 }
 
 #[inline(always)]
-fn emit_block_start(buf: &mut Vec<u8>, name_off: u32, name_len: u32, line: u32) {
-    if buf.capacity() - buf.len() < REC_NAMED {
+fn emit_block_start(buf: &mut Vec<u8>, name_off: u32, name_len: u32, line: u32, parent: u32) {
+    if buf.capacity() - buf.len() < REC_BLOCK_START {
         buf.reserve(4096);
     }
     let len = buf.len();
@@ -768,11 +783,64 @@ fn emit_block_start(buf: &mut Vec<u8>, name_off: u32, name_len: u32, line: u32) 
         std::ptr::copy_nonoverlapping(name_off.to_le_bytes().as_ptr(), ptr.add(1), 4);
         std::ptr::copy_nonoverlapping(name_len.to_le_bytes().as_ptr(), ptr.add(5), 4);
         std::ptr::copy_nonoverlapping(line.to_le_bytes().as_ptr(), ptr.add(9), 4);
-        buf.set_len(len + REC_NAMED);
+        std::ptr::copy_nonoverlapping(parent.to_le_bytes().as_ptr(), ptr.add(BLOCK_PARENT), 4);
+        // end, first child and next sibling are patched when they become known.
+        std::ptr::copy_nonoverlapping([0xFF; 12].as_ptr(), ptr.add(BLOCK_END), 12);
+        buf.set_len(len + REC_BLOCK_START);
+    }
+}
+
+/// Links the blocks of a document into a tree while the bytecode is written.
+///
+/// Every [`TAG_BLOCK_START`] record carries its parent, the index of its matching end
+/// record, its first child and its next sibling, so any block is reached, and any subtree
+/// skipped, without scanning.
+struct BlockTree {
+    /// Open blocks: (record index, record index of the last child so far).
+    open: Vec<(u32, u32)>,
+    /// Last block opened at the top level.
+    last_root: u32,
+}
+
+impl BlockTree {
+    fn new() -> Self {
+        Self { open: Vec::new(), last_root: NO_RECORD }
+    }
+
+    #[inline(always)]
+    fn start(&mut self, fields: &mut Vec<u8>, name_off: u32, name_len: u32, line: u32) {
+        let rec = fields.len() as u32;
+        let (parent, prev) = match self.open.last() {
+            Some(&(parent, last_child)) => (parent, last_child),
+            None => (NO_RECORD, self.last_root),
+        };
+        emit_block_start(fields, name_off, name_len, line, parent);
+        if prev != NO_RECORD {
+            write_u32(fields, prev as usize + BLOCK_NEXT_SIBLING, rec);
+        } else if parent != NO_RECORD {
+            write_u32(fields, parent as usize + BLOCK_FIRST_CHILD, rec);
+        }
+        match self.open.last_mut() {
+            Some(top) => top.1 = rec,
+            None => self.last_root = rec,
+        }
+        self.open.push((rec, NO_RECORD));
+    }
+
+    /// Call right before the end record is written: it will sit at `fields.len()`.
+    #[inline(always)]
+    fn end(&mut self, fields: &mut [u8], end_rec: usize) {
+        if let Some((rec, _)) = self.open.pop() {
+            write_u32(fields, rec as usize + BLOCK_END, end_rec as u32);
+        }
     }
 }
 
 #[inline(always)]
+fn write_u32(buf: &mut [u8], idx: usize, value: u32) {
+    buf[idx..idx + 4].copy_from_slice(&value.to_le_bytes());
+}
+
 fn emit_block_end(buf: &mut Vec<u8>, line: u32) {
     if buf.capacity() - buf.len() < REC_BLOCK_END {
         buf.reserve(4096);
