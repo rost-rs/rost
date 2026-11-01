@@ -244,13 +244,15 @@ The generated loader removes serde's visitor layer and no more: the parser itsel
 
 **Goal:** describe the config once as a Rust struct; get loading, defaults, validation and good errors.
 
-- [ ] `#[derive(Rost)]` complete: enums, tuple structs, type parameters, `rost::load_file` (*named-field structs, lifetimes, `rost::load`, `Load` exist since Sprint 6*)
-- [ ] Field attributes: `range(min, max)`, `regex`, `one_of`, `optional`, `flatten` (*`default`, `rename` and `serde` exist*)
-- [ ] Validation errors pointing to the exact source span, with the field path and what was expected
-- [ ] Typed newtypes out of the box: `Color`, `Dimension`, `Duration`, `Percentage`, `Path`
-- [ ] Environment and command-line overrides (`APP_WINDOW__WIDTH=800`) on top of the file
-- [ ] `Reloader<T>` validates before it swaps (a value outside its range counts as a broken edit)
-- [ ] Schema generation from types (JSON Schema and `.rost` schema) for editor autocompletion
+- [x] `#[derive(Rost)]` complete: unit enums and newtype structs natively, data enums and multi-field tuple structs through serde (`Deserialize` required), type parameters, `rost::load_file` (*named-field structs, lifetimes, `rost::load`, `Load` exist since Sprint 6*)
+- [x] Field attributes: `range(min, max)`, `regex`, `one_of`, `optional`, `flatten` (*`default`, `rename` and `serde` exist*)
+- [x] Validation errors pointing to the exact source span, with the field path and what was expected
+- [x] Typed newtypes out of the box: `Color`, `Dimension` (owned, validated units; the borrowed `rost::Dimension` stays), `Duration`, `Percentage`, `Path`
+- [x] Environment and command-line overrides (`APP_WINDOW__WIDTH=800`) on top of the file
+- [x] `Reloader<T>` validates before it swaps (a value outside its range counts as a broken edit)
+- [x] Schema generation from types (JSON Schema and `.rost` schema) for editor autocompletion
+
+*Status: met. 17 + 7 + 3 integration tests, 7 unit tests; the perf gate is unchanged (±0.01%).*
 
 **Done when:** a config struct needs only `#[derive(Rost)]`, one `Reloader::watch` call, and a bad value is reported at its line without touching the running config. **Reaches Alpha 2.**
 
