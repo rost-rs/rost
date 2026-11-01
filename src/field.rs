@@ -206,6 +206,7 @@ fn parse_plain_decimal(bytes: &[u8]) -> Option<f64> {
 }
 
 /// Parses a plain decimal integer `[-]digits` of at most 18 digits (always fits `i64`).
+#[cfg_attr(not(feature = "serde"), allow(dead_code))] // used by the serde deserializers
 #[inline(always)]
 pub(crate) fn parse_plain_int(bytes: &[u8]) -> Option<i64> {
     let (negative, digits) = match bytes.first()? {
