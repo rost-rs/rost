@@ -105,6 +105,13 @@ fn list_queries_x100(d: &Data) {
 
 type Workload = (&'static str, fn(&Data));
 
+fn find_block_x100(d: &Data) {
+    for i in (0..5_000).step_by(50) {
+        let selector = format!("node_{i}");
+        black_box(d.tagged.find_block(black_box(&selector)));
+    }
+}
+
 const WORKLOADS: &[Workload] = &[
     ("lenient_index", lenient_index),
     ("from_str_typed", from_str_typed),
@@ -112,6 +119,7 @@ const WORKLOADS: &[Workload] = &[
     ("from_str_value", from_str_value),
     ("small_config_x1000", small_config_x1000),
     ("list_queries_x100", list_queries_x100),
+    ("find_block_x100", find_block_x100),
 ];
 
 fn main() {
