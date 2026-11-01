@@ -239,3 +239,74 @@ fn rost_macro_builds_values() {
     assert_eq!(rost::from_str::<Value>(text).unwrap(), v);
     assert_eq!(rost::from_str::<Value>(&rost::to_string_pretty(&v).unwrap()).unwrap(), v);
 }
+
+#[test]
+fn serde_attributes_work_on_both_paths() {
+    #[derive(Debug, Serialize, Deserialize, PartialEq)]
+    #[serde(rename_all = "kebab-case")]
+    struct Config {
+        #[serde(rename = "app")]
+        name: String,
+        #[serde(default)]
+        retries: u8,
+        #[serde(default = "default_port")]
+        port: u16,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        proxy: Option<String>,
+        max_conn: u32,
+        #[serde(flatten)]
+        extra: BTreeMap<String, rost::Value>,
+        event: Event,
+        payload: Payload,
+        #[serde(skip)]
+        cache: Vec<u8>,
+    }
+
+    fn default_port() -> u16 {
+        8080
+    }
+
+    #[derive(Debug, Serialize, Deserialize, PartialEq)]
+    #[serde(tag = "type")]
+    enum Event {
+        Click { x: i32, y: i32 },
+        Key { code: u32 },
+    }
+
+    #[derive(Debug, Serialize, Deserialize, PartialEq)]
+    #[serde(untagged)]
+    enum Payload {
+        Number(i64),
+        Text(String),
+    }
+
+    let src = "app: \"svc\"\nmax-conn: 10\nevent { type: \"Key\", code: 13 }\npayload: \"hi\"\ncolor: \"red\"\nlevel: 3\n";
+    let expected = Config {
+        name: "svc".into(),
+        retries: 0,
+        port: 8080,
+        proxy: None,
+        max_conn: 10,
+        extra: BTreeMap::from([("color".into(), rost::Value::from("red")), ("level".into(), rost::Value::from(3))]),
+        event: Event::Key { code: 13 },
+        payload: Payload::Text("hi".into()),
+        cache: vec![],
+    };
+    assert_eq!(rost::from_str::<Config>(src).unwrap(), expected);
+    assert_eq!(rost::from_template::<Config>(&rost::Template::parse(src).unwrap()).unwrap(), expected);
+
+    let written = rost::to_string_pretty(&expected).unwrap();
+    assert_eq!(
+        written,
+        "app: \"svc\"\nretries: 0\nport: 8080\nmax-conn: 10\ncolor: \"red\"\nlevel: 3\nevent {\n    type: \"Key\"\n    code: 13\n}\npayload: \"hi\"\n"
+    );
+    assert_eq!(rost::from_str::<Config>(&written).unwrap(), expected);
+
+    let clicked = Config { event: Event::Click { x: -1, y: 2 }, payload: Payload::Number(5), ..expected };
+    round_trip_owned(&clicked);
+}
+
+/// `round_trip` for types that are not `Clone`.
+fn round_trip_owned<T: Serialize + for<'de> Deserialize<'de> + PartialEq + std::fmt::Debug>(value: &T) {
+    round_trip(value);
+}
