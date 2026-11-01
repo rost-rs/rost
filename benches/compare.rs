@@ -1,4 +1,8 @@
-//! Reproducible comparison of `rost` against `serde_json` and `toml` on equivalent data.
+//! Reproducible comparison of `rost` against `serde_json`, `sonic-rs`, `simd-json` and `toml`
+//! on equivalent data.
+//!
+//! `simd-json` parses in place, so its timings include copying the input into a fresh
+//! buffer, as a caller holding a `&str` would have to.
 //!
 //! ```text
 //! cargo bench --features serde --bench compare
@@ -151,6 +155,19 @@ fn main() {
         black_box(serde_json::from_str::<HashMap<String, Item>>(black_box(&json_pretty)).unwrap());
     });
     row(big, "serde_json (pretty, same layout as rost)", throughput(json_pretty.len(), d));
+    let d = median(9, || {
+        black_box(rost::from_str::<HashMap<String, Item>>(black_box(&json_src)).unwrap());
+    });
+    row(big, "**rost::from_str** on the JSON text", throughput(json_src.len(), d));
+    let d = median(9, || {
+        black_box(sonic_rs::from_str::<HashMap<String, Item>>(black_box(&json_src)).unwrap());
+    });
+    row(big, "sonic-rs (one record per line)", throughput(json_src.len(), d));
+    let d = median(9, || {
+        let mut buf = black_box(&json_src).as_bytes().to_vec();
+        black_box(simd_json::serde::from_slice::<HashMap<String, Item>>(&mut buf).unwrap());
+    });
+    row(big, "simd-json (one record per line)", throughput(json_src.len(), d));
     let d = median(5, || {
         black_box(toml::from_str::<HashMap<String, Item>>(black_box(&toml_src)).unwrap());
     });
@@ -185,6 +202,19 @@ fn main() {
     row(small, "serde_json (pretty)", per_op(d, LOADS));
     let d = median(15, || {
         for _ in 0..LOADS {
+            black_box(sonic_rs::from_str::<Config>(black_box(JSON_CONFIG)).unwrap());
+        }
+    });
+    row(small, "sonic-rs (compact)", per_op(d, LOADS));
+    let d = median(15, || {
+        for _ in 0..LOADS {
+            let mut buf = black_box(JSON_CONFIG).as_bytes().to_vec();
+            black_box(simd_json::serde::from_slice::<Config>(&mut buf).unwrap());
+        }
+    });
+    row(small, "simd-json (compact)", per_op(d, LOADS));
+    let d = median(15, || {
+        for _ in 0..LOADS {
             black_box(toml::from_str::<Config>(black_box(TOML_CONFIG)).unwrap());
         }
     });
@@ -203,6 +233,19 @@ fn main() {
         black_box(serde_json::from_str::<serde_json::Value>(black_box(&json_pretty)).unwrap());
     });
     row(tree, "serde_json::Value (pretty, same layout as rost)", throughput(json_pretty.len(), d));
+    let d = median(9, || {
+        black_box(rost::json::from_str(black_box(&json_src)).unwrap());
+    });
+    row(tree, "**rost::json::from_str** (strict JSON)", throughput(json_src.len(), d));
+    let d = median(9, || {
+        black_box(sonic_rs::from_str::<sonic_rs::Value>(black_box(&json_src)).unwrap());
+    });
+    row(tree, "sonic_rs::Value", throughput(json_src.len(), d));
+    let d = median(9, || {
+        let mut buf = black_box(&json_src).as_bytes().to_vec();
+        black_box(simd_json::to_owned_value(&mut buf).unwrap());
+    });
+    row(tree, "simd_json::OwnedValue", throughput(json_src.len(), d));
     let d = median(5, || {
         black_box(toml::from_str::<toml::Table>(black_box(&toml_src)).unwrap());
     });
@@ -265,6 +308,18 @@ fn main() {
         black_box(serde_json::from_str::<serde::de::IgnoredAny>(black_box(&json_src)).unwrap());
     });
     row(scan, "serde_json validate (IgnoredAny)", throughput(json_src.len(), d));
+    let d = median(15, || {
+        black_box(rost::json::validate(black_box(&json_src))).unwrap();
+    });
+    row(scan, "rost::json::validate (strict JSON)", throughput(json_src.len(), d));
+    let d = median(15, || {
+        black_box(Template::from_json(black_box(&json_src)).unwrap());
+    });
+    row(scan, "rost Template::from_json (validate + index)", throughput(json_src.len(), d));
+    let d = median(15, || {
+        black_box(sonic_rs::from_str::<serde::de::IgnoredAny>(black_box(&json_src)).unwrap());
+    });
+    row(scan, "sonic-rs validate (IgnoredAny)", throughput(json_src.len(), d));
 
     let lookup = "Lookup by path (per query)";
     let t = Template::from_str(&rost_src);

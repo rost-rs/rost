@@ -134,8 +134,6 @@ fn unrepresentable_values_are_errors() {
     assert!(err(rost::to_string(&42)).contains("document root"));
     assert!(err(rost::to_string(&vec![1])).contains("not a list"));
     assert!(err(rost::to_string(&Shape::Empty)).contains("document root"));
-    assert!(err(rost::to_string(&HashMap::from([("two words", 1)]))).contains("`two words` cannot be written as a .rost key"));
-    assert!(err(rost::to_string(&HashMap::from([("#x", 1)]))).contains("cannot be written"));
     assert!(err(rost::to_string(&HashMap::from([("v", f64::NAN)]))).contains("non-finite"));
     assert!(err(rost::to_string(&HashMap::from([(vec![1], 1)]))).contains("map keys must be"));
 }
@@ -338,6 +336,9 @@ impl Rng {
         const CHARS: &[u8] = b"abcXYZ019_-.$%!?'";
         let len = 1 + self.below(6);
         let mut key: String = (0..len).map(|_| CHARS[self.below(CHARS.len())] as char).collect();
+        if self.below(4) == 0 {
+            key = self.string();
+        }
         if key.starts_with('/') {
             key.insert(0, 'k');
         }
@@ -466,4 +467,23 @@ fn numbers_are_written_exactly() {
             check(f, rng.next() as i64, rng.next());
         }
     }
+}
+
+#[test]
+fn keys_that_are_not_words_are_quoted() {
+    let map = BTreeMap::from([
+        ("".to_string(), 1),
+        ("#x".to_string(), 2),
+        ("a\"b".to_string(), 3),
+        ("plain".to_string(), 4),
+        ("two words".to_string(), 5),
+        ("//c".to_string(), 6),
+        ("x]".to_string(), 7),
+    ]);
+    assert_eq!(
+        rost::to_string(&map).unwrap(),
+        "\"\": 1, \"#x\": 2, \"//c\": 6, \"a\\\"b\": 3, plain: 4, \"two words\": 5, \"x]\": 7"
+    );
+    round_trip(&map);
+    round_trip(&BTreeMap::from([("k k".to_string(), vec![BTreeMap::from([("in ner".to_string(), Shape::Empty)])])]));
 }

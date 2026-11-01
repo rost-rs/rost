@@ -38,7 +38,7 @@ The execution plan lives in [`SPRINTS.md`](SPRINTS.md).
 - [x] Defined string escapes (`\n`, `\t`, `\"`, `\u{...}`) and multi-line / raw strings (`"""` or `r"..."`)
 - [ ] Inline maps/objects (`point { x: 1, y: 2 }` as a value) and lists of objects — serde reads and writes `[{ … }, { … }]` since Sprint 4; queries still see list items as text
 - [ ] Block comments `/* */` and doc-comments `///` preserved in the AST
-- [ ] Lossless bidirectional `rost ⇄ JSON` (and `TOML`/`YAML`) conversion with a conformance suite
+- [x] Lossless bidirectional `rost ⇄ JSON` (and `TOML` through `rost::Value`) conversion with a conformance suite (JSONTestSuite)
 - [x] Serde serializer (`to_string`, `to_string_pretty`, `to_vec`, `to_writer`)
 - [x] Real zero-copy deserialization (`&'de str` borrowed from the buffer, not `visit_string`)
 - [x] Serde enum support (unit, newtype, tuple, struct variants): bare names and single-entry blocks; `| a, b |` still reads as its first variant
@@ -88,7 +88,7 @@ The execution plan lives in [`SPRINTS.md`](SPRINTS.md).
 - [ ] Verify that `rost-lsp` and `tree-sitter-rost` exist and track the spec (the README links them)
 - [ ] `rost` CLI: `fmt`, `check`, `convert` (json/toml/yaml), `diff`, `query`
 - [ ] Reproducible `criterion` benchmarks against `serde_json`, `simd-json`, `toml`, `lightningcss` (back up the "500 MB/s" claim) — `benches/compare.rs` vs `serde_json` / `toml` since Sprint 3
-- [ ] CI: tests, clippy `-D warnings` (clippy is clean as of Sprint 1), `miri`, fuzz, coverage
+- [ ] CI: tests and clippy `-D warnings` (both feature sets) and a perf gate run since Sprint 5; still missing `miri`, fuzz, coverage
 - [ ] Docs: user guide, cookbook (UI, game config, linter), CHANGELOG
 - [ ] Remove redundant aliases (`dump`/`load`/`from_file`, `finish`/`into_string`) before 1.0
 - [x] Remove `extern crate self as utilrs_rost;` (leftover from a previous name)

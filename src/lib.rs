@@ -85,6 +85,7 @@
 pub mod error;
 pub mod field;
 mod index;
+pub mod json;
 pub mod malleable;
 pub mod parser;
 pub mod query;
@@ -236,6 +237,35 @@ impl Template {
             watcher: None,
             index: OnceLock::new(),
         })
+    }
+
+    /// Parses strict RFC 8259 JSON whose top level is an object.
+    ///
+    /// The text is validated with [`json::validate`], then indexed by the same zero-copy
+    /// parser as any rost document, so every query and [`from_template`] work on it.
+    /// Use [`Template::parse`] instead to also accept comments, trailing commas and the
+    /// rest of the rost grammar.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rost::Template;
+    ///
+    /// let doc = Template::from_json(r#"{"window": {"width": 800, "title": "a\nb"}}"#).unwrap();
+    /// assert_eq!(doc.query_i64("window.width"), Some(800));
+    /// assert_eq!(doc.query_string("window.title").as_deref(), Some("a\nb"));
+    ///
+    /// assert!(Template::from_json("{width: 800}").is_err());
+    /// assert!(Template::from_json("[1, 2]").is_err());
+    /// ```
+    pub fn from_json(src: &str) -> Result<Self, ParseError> {
+        json::validate(src)?;
+        let start = src.len() - src.trim_start_matches([' ', '\t', '\n', '\r']).len();
+        if src.as_bytes()[start] != b'{' {
+            let kind = ParseErrorKind::InvalidJson("a document must be an object");
+            return Err(ParseError::new(kind, src.as_bytes(), start..start + 1));
+        }
+        Ok(Self::from_str(src))
     }
 
     /// Parses a document leniently: never fails, silently skipping malformed constructs.

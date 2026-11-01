@@ -14,8 +14,8 @@
 //! | variant with data | block with one entry: `shape { Circle: 1.5 }` |
 //!
 //! `to_string` writes a document on one line; `to_string_pretty` writes one entry per line
-//! with four-space indentation. Non-finite floats are an error rather than a silent `null`,
-//! and keys must be valid `.rost` keys (no whitespace or `: = | [ ] { } , ; "`).
+//! with four-space indentation. Keys that are not plain words are quoted. Non-finite
+//! floats are an error rather than a silent `null`.
 
 use std::fmt::Write as _;
 use std::io;
@@ -254,10 +254,13 @@ impl Writer {
         self.out.push(']');
     }
 
-    /// Appends a key, rejecting text the parser would not read back as the same key.
+    /// Appends a key: bare when it reads back as itself, quoted otherwise.
     fn key(&mut self, key: &str) -> Result<(), DeError> {
-        check_key(key)?;
-        self.out.push_str(key);
+        if is_bare_key(key) {
+            self.out.push_str(key);
+        } else {
+            self.string(key);
+        }
         Ok(())
     }
 
@@ -414,16 +417,10 @@ const KEY_FORBIDDEN: [bool; 256] = {
     table
 };
 
-fn check_key(key: &str) -> Result<(), DeError> {
+/// Whether `key` can be written without quotes and read back as the same key.
+fn is_bare_key(key: &str) -> bool {
     let bytes = key.as_bytes();
-    let valid = !bytes.is_empty()
-        && !matches!(bytes[0], b'#' | b'@' | b'/')
-        && !bytes.iter().any(|&b| KEY_FORBIDDEN[b as usize]);
-    if valid {
-        Ok(())
-    } else {
-        Err(DeError(format!("`{key}` cannot be written as a .rost key")))
-    }
+    !bytes.is_empty() && !matches!(bytes[0], b'#' | b'@' | b'/') && !bytes.iter().any(|&b| KEY_FORBIDDEN[b as usize])
 }
 
 /// Unit variant names are written bare when they read back as the same text.
@@ -759,7 +756,11 @@ impl ser::SerializeMap for Compound<'_> {
         self.w.entry_prefix(self.root, &mut self.layout);
         let start = self.w.out.len();
         key.serialize(KeySerializer { out: &mut self.w.out })?;
-        check_key(&self.w.out[start..])
+        if !is_bare_key(&self.w.out[start..]) {
+            let key = self.w.out.split_off(start);
+            self.w.string(&key);
+        }
+        Ok(())
     }
 
     fn serialize_value<T: ?Sized + Serialize>(&mut self, value: &T) -> Result<(), DeError> {

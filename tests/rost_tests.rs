@@ -1306,3 +1306,141 @@ fn test_untyped_values_keep_units() {
     }
     assert_eq!(rost::from_str::<Typed>("size: 140px\n").unwrap().size, 140.0);
 }
+
+#[test]
+fn test_json_escapes_decode() {
+    assert_eq!(rost::field::unescape(r"a\bb\fc\/d"), "a\u{8}b\u{c}c/d");
+}
+
+#[test]
+fn test_quoted_keys() {
+    let src = "\"two words\": 1\n\"a\\\"b\": \"x\"\n\"\": empty\n\"my block\" {\n    \"inner key\" [1, 2]\n}\nbare: 2\n";
+    let t = Template::parse(src).unwrap();
+    assert_eq!(t.get_value("two words"), Some("1"));
+    assert_eq!(t.query_str("my block.inner key"), None);
+    assert_eq!(t.query_list("my block.inner key"), Some(vec!["1", "2"]));
+    assert_eq!(t.get_value("bare"), Some("2"));
+    assert!(Template::parse("\"open: 1\n").is_err());
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn test_serde_quoted_keys() {
+    use std::collections::BTreeMap;
+    type Doc = BTreeMap<String, serde_json::Value>;
+
+    let src = "\"two words\": 1\n\"a\\\"b\": \"x\"\n\"\": 3\n\"my block\" { \"k\\n\": true }\n";
+    let expected: Doc = serde_json::from_str(r#"{"two words": 1, "a\"b": "x", "": 3, "my block": {"k\n": true}}"#).unwrap();
+    assert_eq!(rost::from_str::<Doc>(src).unwrap(), expected);
+    assert_eq!(rost::from_template::<Doc>(&Template::parse(src).unwrap()).unwrap(), expected);
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn test_json_objects_are_rost_documents() {
+    use serde_json::Value;
+
+    let json = r#"{
+        "name": "rost \"json\" é 🦀 \b\f\n\t\/",
+        "count": -12, "ratio": 1.5e-3, "big": 1E3, "zero": -0,
+        "flags": [true, false, null],
+        "empty_list": [], "empty_obj": {},
+        "nested": {"deep": {"deeper": [1, [2, [3]], {"x": "y"}]}},
+        "items": [{"id": 1, "tags": ["a", "b,c"]}, {"id": 2, "tags": []}],
+        "with space": {"a]b": "}{"}
+    }"#;
+    let expected: Value = serde_json::from_str(json).unwrap();
+    assert_eq!(rost::from_str::<Value>(json).unwrap(), expected);
+    let template = Template::parse(json).unwrap();
+    assert_eq!(rost::from_template::<Value>(&template).unwrap(), expected);
+    assert_eq!(template.query_list("flags"), Some(vec!["true", "false", "null"]));
+    assert_eq!(template.query_raw_value("nested.deep"), None);
+    assert_eq!(template.get_value("count"), Some("-12"));
+
+    // Compact JSON and a top-level array (single-pass path) work too.
+    let compact = serde_json::to_string(&expected).unwrap();
+    assert_eq!(rost::from_str::<Value>(&compact).unwrap(), expected);
+    assert_eq!(rost::from_str::<Vec<u8>>("[1, 2, 3]").unwrap(), vec![1, 2, 3]);
+    assert_eq!(rost::from_str::<Value>(" [{\"a\": 1}] ").unwrap(), serde_json::json!([{"a": 1}]));
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn test_typed_json_documents() {
+    use serde::Deserialize;
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    enum Mode {
+        Off,
+        Level(u8),
+        Range { lo: i32, hi: i32 },
+    }
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct Window {
+        width: u32,
+        title: Option<String>,
+    }
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct Config {
+        name: String,
+        window: Window,
+        backup: Option<Window>,
+        none: Option<Window>,
+        modes: Vec<Mode>,
+        mode: Mode,
+        matrix: Vec<Vec<f64>>,
+    }
+
+    let json = r#"{"name": "app", "window": {"width": 800, "title": null}, "backup": {"width": 1, "title": "b"},
+        "none": null, "modes": ["Off", {"Level": 3}, {"Range": {"lo": -1, "hi": 1}}], "mode": {"Level": 9},
+        "matrix": [[1.5, 2], []]}"#;
+    let expected = Config {
+        name: "app".into(),
+        window: Window { width: 800, title: None },
+        backup: Some(Window { width: 1, title: Some("b".into()) }),
+        none: None,
+        modes: vec![Mode::Off, Mode::Level(3), Mode::Range { lo: -1, hi: 1 }],
+        mode: Mode::Level(9),
+        matrix: vec![vec![1.5, 2.0], vec![]],
+    };
+    assert_eq!(rost::from_str::<Config>(json).unwrap(), expected);
+    assert_eq!(rost::from_template::<Config>(&Template::parse(json).unwrap()).unwrap(), expected);
+
+    // A block where a scalar is expected is an error, not a misaligned parse.
+    #[derive(Debug, Deserialize)]
+    #[allow(dead_code)]
+    struct Wrong {
+        name: String,
+    }
+    let err = rost::from_str::<Wrong>(r#"{"name": {"a": 1}}"#).unwrap_err().to_string();
+    assert!(err.contains("expected a scalar value, found a block or a list"), "{err}");
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn test_strict_json_and_other_formats_convert_through_value() {
+    let json = r#"{"name": "app", "window": {"width": 800, "ratio": 1.5}, "tags": ["a", "b"], "on": true}"#;
+
+    // The strict template indexes the same object the lenient parser does.
+    let strict = Template::from_json(json).unwrap();
+    assert_eq!(strict.bytecode(), Template::parse(json).unwrap().bytecode());
+    let value: rost::Value = rost::from_template(&strict).unwrap();
+    assert_eq!(value, rost::json::from_str(json).unwrap());
+    assert_eq!(rost::from_str::<rost::Value>(json).unwrap(), value);
+
+    // JSON -> rost -> JSON keeps the tree.
+    let doc = rost::to_string(&value).unwrap();
+    let back: rost::Value = rost::from_str(&doc).unwrap();
+    assert_eq!(rost::json::to_string(&back), rost::json::to_string(&value));
+
+    // Any serde format lands in the same Value, so TOML converts too.
+    let toml_src = "name = \"app\"\ntags = [\"a\", \"b\"]\non = true\n\n[window]\nwidth = 800\nratio = 1.5\n";
+    let from_toml: rost::Value = toml::from_str(toml_src).unwrap();
+    for key in ["name", "window", "tags", "on"] {
+        assert_eq!(from_toml[key], value[key], "{key}");
+    }
+    let doc = rost::to_string(&from_toml).unwrap();
+    assert_eq!(rost::from_str::<rost::Value>(&doc).unwrap(), from_toml);
+}

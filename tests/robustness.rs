@@ -12,6 +12,8 @@ const SEEDS: &[&str] = &[
     "#PlayerEntity\nname: \"Valkyrie\",\nspeed: 350.0,\ninventory [ \"spear\", [\"nested\"] ],\ndifficulty | easy, nightmare |\n",
     "##state \"hover\"\nbody: \"\"\"raw\n\"text\" {}\"\"\"\nesc: \"a\\\"b\\u{1F980}\"\nnil: null\n",
     "palette {\n  bg: #fff\n  inner { x: -1e3, y: .5 }\n}\n// comment\n@rule { fix = f() }\n",
+    "\"a key\": 1\n\"q\\\"k\" { \"x y\" [1, { \"n\": null }] }\n\"b\" = f()\n",
+    "{\"a\": [1, {\"b\": \"c\\u00e9\"}, []], \"d\": {\"e\": null, \"f\": -0.5e2}, \"g\": \"\"}\n",
     "items [\n    { id: 1, name: \"a]\" },\n    { id: 2, tags [x, \"y\"] }\n]\ngrid [[1, 2], [3]]\nmode { Move { x: 1 } }\n",
 ];
 
@@ -106,8 +108,7 @@ fn exercise(src: &str) {
             if let Ok(value) = value {
                 assert_eq!(Ok(&value), rost::from_template::<rost::Value>(t).as_ref(), "{src:?}");
                 for written in [rost::to_string(&value), rost::to_string_pretty(&value)] {
-                    // Keys the format cannot write back (e.g. `a"b`) are reported, not mangled.
-                    let Ok(written) = written else { continue };
+                    let written = written.unwrap_or_else(|e| panic!("cannot write the tree of {src:?}: {e}"));
                     let back = rost::from_str::<rost::Value>(&written)
                         .unwrap_or_else(|e| panic!("cannot read back {written:?} (from {src:?}): {e}"));
                     assert_eq!(back, value, "write/read cycle of {src:?} via {written:?}");

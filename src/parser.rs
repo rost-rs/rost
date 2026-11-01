@@ -4,7 +4,7 @@
 //! for `.rost` documents. It transforms arbitrary `.rost` text into a compact
 //! binary offset arena (`Vec<u8>`) at sustained throughputs exceeding 500 MB/s.
 
-use memchr::{memchr, memchr2};
+use memchr::{memchr, memchr2, memchr3};
 use std::collections::HashSet;
 use std::ops::Range;
 
@@ -252,13 +252,40 @@ fn line_end(raw: &[u8], from: usize) -> usize {
     memchr(b'\n', &raw[from.min(raw.len())..]).map_or(raw.len(), |p| from + p)
 }
 
+/// A document wrapped in `{ … }`, as a JSON object is, reads as its contents: returns
+/// where the contents start and the position of the closing `}` (the last
+/// non-whitespace byte).
+pub(crate) fn root_braces(raw: &[u8]) -> Option<(usize, usize)> {
+    let mut i = 0;
+    loop {
+        while i < raw.len() && WS_LUT[raw[i] as usize] != 0 {
+            i += 1;
+        }
+        if raw[i..].starts_with(b"//") {
+            i = memchr(b'\n', &raw[i..]).map_or(raw.len(), |p| i + p);
+        } else {
+            break;
+        }
+    }
+    if raw.get(i) != Some(&b'{') {
+        return None;
+    }
+    let end = raw.iter().rposition(|b| !b.is_ascii_whitespace())?;
+    (end > i && raw[end] == b'}').then_some((i + 1, end))
+}
+
 fn scan<D: Diagnostics>(raw: &[u8], diag: &mut D) -> Vec<u8> {
+    // Truncating at the closing brace keeps every offset absolute.
+    let (start, raw) = match root_braces(raw) {
+        Some((start, end)) => (start, &raw[..end]),
+        None => (0, raw),
+    };
     let len = raw.len();
     // Pre-allocate assuming an average token density of one field per 24 bytes
     let mut fields = Vec::with_capacity((len / 24).max(1) * 21);
 
-    let mut i = 0;
-    let mut line: u32 = 1;
+    let mut i = start;
+    let mut line: u32 = 1 + count_newlines(&raw[..start]);
 
     // Name spans of currently open blocks; only tracked when diagnostics are enabled.
     let mut open_blocks: Vec<Range<usize>> = Vec::new();
@@ -424,14 +451,30 @@ fn scan<D: Diagnostics>(raw: &[u8], diag: &mut D) -> Vec<u8> {
         }
 
         // 7. General Identifier / Property Key scan using 1-cycle lookup table
-        let key_start = i;
-        while i < len && !IS_DELIM_OR_WS[raw[i] as usize] {
+        let mut key_start = i;
+        while i < len && !KEY_END[raw[i] as usize] {
             i += 1;
         }
+        let mut key_end = i;
+        let quoted = key_end == key_start && raw[i] == b'"';
+        if quoted {
+            // Quoted key (`"any key": …`): the record holds the body, and the `"` right
+            // after it is how readers tell a quoted key from a bare one.
+            let Some(end) = quoted_key_end(raw, i) else {
+                let end = line_end(raw, i);
+                diag.report(ParseErrorKind::UnterminatedString, i..end);
+                i = end;
+                continue;
+            };
+            key_start = i + 1;
+            key_end = end;
+            line += count_newlines(&raw[key_start..key_end]);
+            i = key_end + 1;
+        }
         let key_off = key_start as u32;
-        let key_len = (i - key_start) as u32;
+        let key_len = (key_end - key_start) as u32;
 
-        if key_len == 0 {
+        if key_len == 0 && !quoted {
             // A delimiter (`:`, `=`, `|`, `[`, `{`) where a key should start.
             diag.report(ParseErrorKind::ExpectedKey, i..i + 1);
             // `: value` / `= expr` is a property missing its key: skip the value too, so one
@@ -453,16 +496,47 @@ fn scan<D: Diagnostics>(raw: &[u8], diag: &mut D) -> Vec<u8> {
             break;
         }
 
-        match raw[i] {
-            // Block start without leading '#' (e.g., palette { ... })
-            b'{' => {
+        // Opens the block of `key {` (at `i`, the brace).
+        macro_rules! open_block {
+            () => {{
                 if D::ENABLED {
                     open_blocks.push(key_start..key_start + key_len as usize);
                     scopes.open();
                 }
                 emit_block_start(&mut fields, key_off, key_len, line);
                 i += 1;
-            }
+            }};
+        }
+        // Reads the list of `key [ … ]` (at `i`, the bracket).
+        macro_rules! scan_list {
+            () => {{
+                let start_line = line;
+                let body_start = i + 1;
+                // A closed list ends before its `]`; an unterminated one runs to EOF.
+                let body_end = match find_list_end(raw, body_start) {
+                    Some(end) => {
+                        i = end + 1;
+                        end
+                    }
+                    None => {
+                        diag.report(ParseErrorKind::UnterminatedList, body_start - 1..line_end(raw, body_start));
+                        i = len;
+                        len
+                    }
+                };
+                line += count_newlines(&raw[body_start..body_end]);
+                let body_off = body_start as u32;
+                let body_len = (body_end - body_start) as u32;
+                let end_line = line;
+
+                check_duplicate(diag, &mut scopes, raw, key_start..key_start + key_len as usize);
+                emit_list(&mut fields, key_off, key_len, body_off, body_len, start_line, end_line);
+            }};
+        }
+
+        match raw[i] {
+            // Block start without leading '#' (e.g., palette { ... })
+            b'{' => open_block!(),
 
             // Common Property: key: "value" or key: 120px
             b':' => {
@@ -471,7 +545,12 @@ fn scan<D: Diagnostics>(raw: &[u8], diag: &mut D) -> Vec<u8> {
                     i += 1;
                 }
 
-                if i < len && raw[i] == b'"' && !raw[i..].starts_with(RAW_QUOTE) {
+                // `key: { … }` and `key: [ … ]` are the JSON spellings of `key {` / `key [`.
+                if i < len && raw[i] == b'{' {
+                    open_block!();
+                } else if i < len && raw[i] == b'[' {
+                    scan_list!();
+                } else if i < len && raw[i] == b'"' && !raw[i..].starts_with(RAW_QUOTE) {
                     let val_start = i + 1;
                     if let Some((quote_end, newlines)) = scan_quoted(&raw[val_start..]) {
                         let val_off = val_start as u32;
@@ -544,29 +623,7 @@ fn scan<D: Diagnostics>(raw: &[u8], diag: &mut D) -> Vec<u8> {
             }
 
             // Lists / Arrays: key [ item1, item2 ]
-            b'[' => {
-                let start_line = line;
-                let body_start = i + 1;
-                // A closed list ends before its `]`; an unterminated one runs to EOF.
-                let body_end = match find_list_end(raw, body_start) {
-                    Some(end) => {
-                        i = end + 1;
-                        end
-                    }
-                    None => {
-                        diag.report(ParseErrorKind::UnterminatedList, body_start - 1..line_end(raw, body_start));
-                        i = len;
-                        len
-                    }
-                };
-                line += count_newlines(&raw[body_start..body_end]);
-                let body_off = body_start as u32;
-                let body_len = (body_end - body_start) as u32;
-                let end_line = line;
-
-                check_duplicate(diag, &mut scopes, raw, key_start..key_start + key_len as usize);
-                emit_list(&mut fields, key_off, key_len, body_off, body_len, start_line, end_line);
-            }
+            b'[' => scan_list!(),
 
             // Variables and Expression Bindings: key = expr
             b'=' => {
@@ -836,6 +893,23 @@ pub(crate) fn resolve_slice<'a>(data: &'a [u8], fields: &[u8], idx: usize) -> &'
     unsafe { std::str::from_utf8_unchecked(&data[off..off + len]) }
 }
 
+/// Resolves the key of the record at `idx`, decoding escapes if the key was quoted.
+///
+/// A quoted key is followed by its closing `"`; a bare key never is (see [`KEY_END`]).
+#[cfg_attr(not(feature = "serde"), allow(dead_code))] // read by the serde deserializers
+#[inline]
+pub(crate) fn resolve_key<'a>(data: &'a [u8], fields: &[u8], idx: usize) -> (&'a str, std::borrow::Cow<'a, str>) {
+    let key = resolve_slice(data, fields, idx);
+    let end = read_u32(fields, idx) as usize + key.len();
+    let text = if data.get(end) == Some(&b'"') { quoted_key_text(key) } else { std::borrow::Cow::Borrowed(key) };
+    (key, text)
+}
+
+#[cold]
+fn quoted_key_text(key: &str) -> std::borrow::Cow<'_, str> {
+    crate::field::unescape(key)
+}
+
 /// Finds the delimiter (`\n`, `,` or `}`) that ends an unquoted value starting at `start`.
 ///
 /// Commas and braces nested inside `(...)`, `[...]` or quoted strings belong to the value
@@ -855,6 +929,14 @@ pub(crate) fn find_value_end(raw: &[u8], start: usize) -> Option<usize> {
     }
     None
 }
+
+/// Bytes that end a bare key: delimiters, whitespace and `"` (which starts a quoted key,
+/// so a bare key is never directly followed by a quote).
+pub(crate) const KEY_END: [bool; 256] = {
+    let mut table = IS_DELIM_OR_WS;
+    table[b'"' as usize] = true;
+    table
+};
 
 /// Byte class for [`find_value_end`]: a delimiter that ends the value.
 const VALUE_END: u8 = 1;
@@ -894,6 +976,15 @@ fn find_nested_value_end(raw: &[u8], nested: usize) -> Option<usize> {
     None
 }
 
+/// Returns the position of the quote closing the quoted key that starts at `start`.
+///
+/// Out of line: quoted keys are rare, and inlined this path slows the bare-key loop.
+#[cold]
+#[inline(never)]
+fn quoted_key_end(raw: &[u8], start: usize) -> Option<usize> {
+    find_unescaped_quote(&raw[start + 1..]).map(|end| start + 1 + end)
+}
+
 /// Finds the `]` closing a list whose body starts at `start`.
 ///
 /// Nested lists are balanced and quoted strings are skipped, so `["a]b"]` is one item.
@@ -901,7 +992,9 @@ fn find_nested_value_end(raw: &[u8], nested: usize) -> Option<usize> {
 pub(crate) fn find_list_end(raw: &[u8], start: usize) -> Option<usize> {
     let mut depth = 1u32;
     let mut i = start;
-    while i < raw.len() {
+    // Only brackets and quotes matter: jump between them instead of walking every byte.
+    while let Some(skip) = memchr3(b'[', b']', b'"', &raw[i.min(raw.len())..]) {
+        i += skip;
         match raw[i] {
             b'[' => depth += 1,
             b']' => {

@@ -14,9 +14,9 @@ use memchr::{memchr, memchr2};
 use serde::de::value::BorrowedStrDeserializer;
 use serde::de::{self, DeserializeSeed, Deserializer, IgnoredAny, MapAccess, SeqAccess, Visitor};
 
-use crate::de::{DeError, FieldDeserializer, KeyDeserializer, MapEnum};
-use crate::field::QuoteStyle;
-use crate::parser::{find_list_end, find_unescaped_quote, find_value_end, trim_trailing_ws, IS_DELIM_OR_WS, RAW_QUOTE};
+use crate::de::{deserialize_key, DeError, FieldDeserializer, KeyDeserializer, MapEnum};
+use crate::field::{unescape, QuoteStyle};
+use crate::parser::{find_list_end, root_braces, KEY_END, find_unescaped_quote, find_value_end, trim_trailing_ws, IS_DELIM_OR_WS, RAW_QUOTE};
 
 /// Deserializes a `.rost` document from a string in a single pass.
 ///
@@ -48,11 +48,37 @@ use crate::parser::{find_list_end, find_unescaped_quote, find_value_end, trim_tr
 /// ```
 pub fn from_str<'de, T: de::Deserialize<'de>>(src: &'de str) -> Result<T, DeError> {
     let mut parser = Parser { src, bytes: src.as_bytes(), pos: 0, locate: true };
-    let value = T::deserialize(Root { p: &mut parser })?;
+    let value = match parser.bytes.get(skip_trivia(parser.bytes, 0)) {
+        // JSON-shaped documents take their own path, so plain `.rost` roots stay lean.
+        Some(b'{' | b'[') => deserialize_wrapped(&mut parser)?,
+        _ => T::deserialize(Root { p: &mut parser })?,
+    };
     parser.skip_trivia();
     if parser.pos < parser.bytes.len() {
         return Err(parser.error("trailing characters after the document"));
     }
+    Ok(value)
+}
+
+/// Deserializes a document that starts with `{` (a JSON object, read as its contents) or
+/// `[` (a top-level list, as JSON arrays are).
+#[inline(never)]
+fn deserialize_wrapped<'de, T: de::Deserialize<'de>>(parser: &mut Parser<'de>) -> Result<T, DeError> {
+    parser.skip_trivia();
+    if parser.peek() == Some(b'[') {
+        parser.pos += 1;
+        return T::deserialize(List { p: parser });
+    }
+    let Some((start, end)) = root_braces(&parser.bytes[parser.pos..]).map(|(s, e)| (parser.pos + s, parser.pos + e))
+    else {
+        // No closing brace at the end: not a wrapped document, so report it as `.rost`.
+        return T::deserialize(Root { p: parser });
+    };
+    // Truncating at the closing brace keeps positions absolute, and matches where the
+    // bytecode parser ends the document.
+    let mut body = Parser { src: &parser.src[..end], bytes: &parser.bytes[..end], pos: start, locate: parser.locate };
+    let value = T::deserialize(Root { p: &mut body })?;
+    parser.pos = end + 1;
     Ok(value)
 }
 
@@ -148,7 +174,7 @@ fn skip_inline_ws(bytes: &[u8], mut pos: usize) -> usize {
 /// Returns the end of the key starting at `pos`.
 #[inline(always)]
 fn key_end(bytes: &[u8], mut pos: usize) -> usize {
-    while pos < bytes.len() && !IS_DELIM_OR_WS[bytes[pos] as usize] {
+    while pos < bytes.len() && !KEY_END[bytes[pos] as usize] {
         pos += 1;
     }
     pos
@@ -233,6 +259,10 @@ impl<'de> Parser<'de> {
         let bytes = self.bytes;
         let start = skip_inline_ws(bytes, self.pos);
         if bytes.get(start) != Some(&b'"') {
+            if matches!(bytes.get(start), Some(b'{' | b'[')) {
+                self.pos = start;
+                return Err(self.error("expected a scalar value, found a block or a list"));
+            }
             let end = find_value_end(bytes, start).unwrap_or(bytes.len());
             let len = trim_trailing_ws(bytes, start, end);
             // A ',' belongs to this value; '\n' and '}' are left for the enclosing map.
@@ -392,6 +422,21 @@ impl<'de> Parser<'de> {
     }
 }
 
+/// Why reading an entry key left the fast path: an error, or a quoted key with escapes
+/// to decode. Escaped keys ride on the error branch that every key read already checks,
+/// so they cost the common case nothing.
+enum Detour<'de> {
+    Error(DeError),
+    EscapedKey(&'de str),
+}
+
+impl From<DeError> for Detour<'_> {
+    #[inline]
+    fn from(e: DeError) -> Self {
+        Detour::Error(e)
+    }
+}
+
 /// What the key just read introduces.
 #[derive(Clone, Copy)]
 enum Pending {
@@ -415,24 +460,24 @@ impl<'de> Entries<'_, 'de> {
     /// Inlined fast path for `key: …`, `key { … }`, `key [ … ]`, `key | … |` and `}`;
     /// everything else goes through [`Entries::next_entry_slow`].
     #[inline(always)]
-    fn next_entry(&mut self) -> Result<Option<&'de str>, DeError> {
+    fn next_entry(&mut self) -> Result<Option<&'de str>, Detour<'de>> {
         let bytes = self.p.bytes;
         let start = skip_trivia(bytes, self.p.pos);
         match bytes.get(start) {
-            Some(&b) if b != b'#' && b != b'@' && !IS_DELIM_OR_WS[b as usize] => {
+            Some(&b) if b != b'#' && b != b'@' && b != b'"' && !IS_DELIM_OR_WS[b as usize] => {
                 let end = key_end(bytes, start);
                 let op = skip_inline_ws(bytes, end);
-                let pending = match bytes.get(op) {
-                    Some(b':') => Pending::Scalar,
-                    Some(b'{') => Pending::Block,
-                    Some(b'[') => Pending::List,
-                    Some(b'|') => Pending::Enum,
+                let (pending, next) = match bytes.get(op) {
+                    Some(b':') => (Pending::Scalar, op + 1),
+                    Some(b'{') => (Pending::Block, op + 1),
+                    Some(b'[') => (Pending::List, op + 1),
+                    Some(b'|') => (Pending::Enum, op + 1),
                     _ => {
                         self.p.pos = start;
                         return self.next_entry_slow();
                     }
                 };
-                self.p.pos = op + 1;
+                self.p.pos = next;
                 self.pending = Some(pending);
                 Ok(Some(&self.p.src[start..end]))
             }
@@ -462,17 +507,17 @@ impl<'de> Entries<'_, 'de> {
     /// Handles every entry form, including directives, titles, bindings and errors.
     #[cold]
     #[inline(never)]
-    fn next_entry_slow(&mut self) -> Result<Option<&'de str>, DeError> {
+    fn next_entry_slow(&mut self) -> Result<Option<&'de str>, Detour<'de>> {
         let p = &mut *self.p;
         loop {
             p.skip_trivia();
             let Some(b) = p.peek() else {
-                return if self.root { Ok(None) } else { Err(p.error("unclosed block: missing `}`")) };
+                return if self.root { Ok(None) } else { Err(p.error("unclosed block: missing `}`").into()) };
             };
             match b {
                 b'}' => {
                     if self.root {
-                        return Err(p.error("unexpected `}` without a matching block"));
+                        return Err(p.error("unexpected `}` without a matching block").into());
                     }
                     p.pos += 1;
                     return Ok(None);
@@ -510,19 +555,46 @@ impl<'de> Entries<'_, 'de> {
                     }
                     // `#Title` without a block: a section header, not data.
                 }
+                b'"' => {
+                    // Quoted key: `"any key": value`.
+                    let start = p.pos + 1;
+                    let Some((len, escaped)) = find_string_end(&p.bytes[start..]) else {
+                        return Err(p.error("unterminated string literal").into());
+                    };
+                    p.pos = start + len + 1;
+                    let key = &p.src[start..start + len];
+                    p.skip_inline_ws();
+                    let (pending, next) = match p.peek() {
+                        Some(b':') => (Pending::Scalar, p.pos + 1),
+                        Some(b'{') => (Pending::Block, p.pos + 1),
+                        Some(b'[') => (Pending::List, p.pos + 1),
+                        Some(b'|') => (Pending::Enum, p.pos + 1),
+                        Some(b'=') => {
+                            p.pos = memchr2(b'\n', b'}', &p.bytes[p.pos..]).map_or(p.bytes.len(), |e| p.pos + e);
+                            continue;
+                        }
+                        _ => return Err(p.error("expected `:`, `=`, `|`, `[` or `{` after key").into()),
+                    };
+                    p.pos = next;
+                    self.pending = Some(pending);
+                    if escaped {
+                        return Err(Detour::EscapedKey(key));
+                    }
+                    return Ok(Some(key));
+                }
                 _ => {
                     let start = p.pos;
                     p.pos = key_end(p.bytes, start);
                     let key = &p.src[start..p.pos];
                     if key.is_empty() {
-                        return Err(p.error("expected a key"));
+                        return Err(p.error("expected a key").into());
                     }
                     p.skip_inline_ws();
-                    let pending = match p.peek() {
-                        Some(b':') => Pending::Scalar,
-                        Some(b'{') => Pending::Block,
-                        Some(b'[') => Pending::List,
-                        Some(b'|') => Pending::Enum,
+                    let (pending, next) = match p.peek() {
+                        Some(b':') => (Pending::Scalar, p.pos + 1),
+                        Some(b'{') => (Pending::Block, p.pos + 1),
+                        Some(b'[') => (Pending::List, p.pos + 1),
+                        Some(b'|') => (Pending::Enum, p.pos + 1),
                         Some(b'=') => {
                             // `key = expr` bindings are behaviour, not data.
                             p.pos = memchr2(b'\n', b'}', &p.bytes[p.pos..]).map_or(p.bytes.len(), |e| p.pos + e);
@@ -530,10 +602,10 @@ impl<'de> Entries<'_, 'de> {
                         }
                         _ => {
                             p.pos = start;
-                            return Err(p.error("expected `:`, `=`, `|`, `[` or `{` after key"));
+                            return Err(p.error("expected `:`, `=`, `|`, `[` or `{` after key").into());
                         }
                     };
-                    p.pos += 1;
+                    p.pos = next;
                     self.pending = Some(pending);
                     return Ok(Some(key));
                 }
@@ -547,12 +619,17 @@ impl<'de> MapAccess<'de> for Entries<'_, 'de> {
 
     #[inline]
     fn next_key_seed<K: DeserializeSeed<'de>>(&mut self, seed: K) -> Result<Option<K::Value>, DeError> {
-        match self.next_entry()? {
-            Some(key) => {
+        match self.next_entry() {
+            Ok(Some(key)) => {
                 self.key = key;
                 seed.deserialize(KeyDeserializer(key)).map(Some)
             }
-            None => Ok(None),
+            Ok(None) => Ok(None),
+            Err(Detour::EscapedKey(key)) => {
+                self.key = key;
+                deserialize_key(seed, unescape(key)).map(Some)
+            }
+            Err(Detour::Error(e)) => Err(e),
         }
     }
 
@@ -742,6 +819,12 @@ impl<'de> SeqAccess<'de> for Items<'_, 'de> {
     }
 }
 
+/// A block or list reached through `key:`.
+enum Nested<'a, 'de> {
+    Block(Block<'a, 'de>),
+    List(List<'a, 'de>),
+}
+
 /// The value after `key:`, read lazily so the type hint picks the parser.
 ///
 /// Integers, plain decimals, booleans and `null` are converted while scanning; anything
@@ -752,7 +835,23 @@ struct Scalar<'a, 'de> {
     key: &'de str,
 }
 
-impl<'de> Scalar<'_, 'de> {
+impl<'a, 'de> Scalar<'a, 'de> {
+    /// The byte opening `key: { … }` or `key: [ … ]` (the JSON spellings of `key { … }`
+    /// and `key [ … ]`), if the value is one. Only the untyped and structured paths look:
+    /// the typed fast paths fail on these bytes anyway and fall back to [`Scalar::text`].
+    #[inline]
+    fn nested(&self) -> Option<u8> {
+        let at = skip_inline_ws(self.p.bytes, self.p.pos);
+        self.p.bytes.get(at).copied().filter(|&b| b == b'{' || b == b'[')
+    }
+
+    /// Enters the block or list of `key: { … }` / `key: [ … ]`.
+    fn open(self, opening: u8) -> Result<Nested<'a, 'de>, DeError> {
+        let p = self.p;
+        p.pos = skip_inline_ws(p.bytes, p.pos) + 1;
+        Ok(if opening == b'{' { Nested::Block(Block { p, root: false }) } else { Nested::List(List { p }) })
+    }
+
     fn text(self) -> Result<FieldDeserializer<'de>, DeError> {
         let (value, quote) = self.p.read_scalar()?;
         Ok(FieldDeserializer { name: self.key, value, quote })
@@ -780,7 +879,13 @@ impl<'de> Deserializer<'de> for Scalar<'_, 'de> {
 
     #[inline]
     fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, DeError> {
-        self.text()?.deserialize_any(visitor)
+        match self.nested() {
+            Some(opening) => match self.open(opening)? {
+                Nested::Block(block) => block.deserialize_any(visitor),
+                Nested::List(list) => list.deserialize_any(visitor),
+            },
+            None => self.text()?.deserialize_any(visitor),
+        }
     }
 
     fused_integers! {
@@ -835,7 +940,13 @@ impl<'de> Deserializer<'de> for Scalar<'_, 'de> {
         variants: &'static [&'static str],
         visitor: V,
     ) -> Result<V::Value, DeError> {
-        self.text()?.deserialize_enum(name, variants, visitor)
+        match self.nested() {
+            Some(b'{') => match self.open(b'{')? {
+                Nested::Block(block) => block.deserialize_enum(name, variants, visitor),
+                Nested::List(list) => list.deserialize_any(visitor),
+            },
+            _ => self.text()?.deserialize_enum(name, variants, visitor),
+        }
     }
 
     #[inline]
@@ -843,8 +954,9 @@ impl<'de> Deserializer<'de> for Scalar<'_, 'de> {
         if self.p.plain_word(b"null") {
             return visitor.visit_none();
         }
-        if self.p.bytes.get(skip_inline_ws(self.p.bytes, self.p.pos)) == Some(&b'"') {
-            // Quoted values are never `null`; keep the lazy fast paths for the inner value.
+        if matches!(self.p.bytes.get(skip_inline_ws(self.p.bytes, self.p.pos)), Some(b'"' | b'{' | b'[')) {
+            // Quoted values, blocks and lists are never `null`; keep the lazy fast paths
+            // for the inner value.
             return visitor.visit_some(self);
         }
         // Bare values decide `null` with the shared trimming rules.

@@ -132,21 +132,37 @@ i7-13650HX, pinned to one core; `cargo bench --features serde --bench compare`):
 
 **Goal:** make the speed claim public and reproducible; read JSON too, so adoption is incremental.
 
-- [ ] JSON input mode: parse standard JSON into the same bytecode arena
-- [ ] Lossless `rost ⇄ JSON` conversion (+ `toml`/`yaml` behind features)
-- [ ] Pass the JSONTestSuite conformance cases in JSON mode
-- [ ] Extend the Sprint 3 benchmark to `simd-json`, `sonic-rs`, `lightningcss`
-- [ ] Larger benchmark corpus (real configs, themes, datasets)
-- [ ] Profile-driven parser optimizations (explicit SIMD for long runs: strings, comments, indentation)
-- [ ] Typed loading clearly ahead of `serde_json` on compact layouts (Sprint 3 reached parity)
-- [ ] CI job that fails on performance regressions
+- [x] JSON input mode: parse standard JSON into the same bytecode arena (the grammar is a JSON superset: quoted keys, `key: { … }` / `key: [ … ]`, a document wrapped in `{ … }`; `Template::from_json` adds strict validation)
+- [x] Lossless `rost ⇄ JSON` conversion through `rost::Value` (`rost::json::{from_str, to_string, to_string_pretty}`); `toml` converts through `Value` without a feature, `yaml` dropped (no maintained serde YAML crate worth a dependency)
+- [x] Pass the JSONTestSuite conformance cases in JSON mode (all 95 `y_` accepted, all 188 `n_` rejected, no panic on the 35 `i_`; every `y_` value reads the same through the superset readers)
+- [x] Extend the Sprint 3 benchmark to `simd-json`, `sonic-rs` (`lightningcss` moves to Sprint 8, where there is CSS to compare)
+- [x] Larger benchmark corpus: canada / citm_catalog / twitter, fetched by `scripts/fetch-corpus.sh` (`benches/corpus.rs`)
+- [x] Profile-driven parser optimizations: SWAR string scan in strict JSON, `memchr3` list delimiting, hot-path recovery after the grammar changes
+- [ ] Typed loading clearly ahead of `serde_json` on compact layouts — **not reached**: on par (within ~7%), moved to Sprint 6
+- [x] CI job that fails on performance regressions (`scripts/perf-gate.sh`: base vs PR in the same job, alternating rounds, >10% fails)
 
 **Done when:** README shows reproducible numbers where `rost` leads or ties in its target workloads.
+✅ Leads on small configs (load ~1.2×, write ~2×), pretty writing (~1.5×), dynamic trees vs
+`serde_json`/`simd-json` and query-ready indexing (canada indexed in 0.9 ms, faster than
+`serde_json` validates it); ties on large typed loads. Behind: `sonic-rs`'s arena DOM
+(~4× faster than any owned tree) and strict validation of number-heavy JSON (canada 1.7×).
+
+| Measure (pinned) | Sprint 4 tip | Sprint 5 |
+|---|---|---|
+| Lenient index, instructions | 1027M | 894M (−13%) |
+| `from_str` typed, instructions | 1927M | 1977M (+2.6%: JSON grammar checks) |
+| canada.json → `Value`, instructions per pass | 227M | 180M (−21%) |
+| Perf gate, wall time (`benches/gate.rs`, min of 3 alternating rounds) | — | lenient −16%, typed `from_str` +4%, template +3.6%, `Value` −2.4%, small config +2% |
+
+> Fixed on the way: strict JSON `-0` read as `Int(0)` while both rost readers kept
+> `-0.0`; JSONTestSuite caught it.
 
 ## Sprint 6 — Indexed in-memory data structure
 
 **Goal:** every lookup is O(1) or O(depth), with no rebuilding of views.
 
+- [ ] Typed loading clearly ahead of `serde_json` on compact layouts (carried over from Sprint 5)
+- [ ] Arena-backed `Value` (borrowed keys/strings) to close the gap with `sonic_rs::Value`
 - [ ] Block tree encoded in the bytecode (parent / first-child / next-sibling offsets)
 - [ ] Path index built during parsing for `find_block` (lazy `query_*` index lands in Sprint 3)
 - [ ] Allocation-free typed iterators for lists, enums and blocks
@@ -180,6 +196,7 @@ i7-13650HX, pinned to one core; `cargo bench --features serde --bench compare`):
 - [ ] `@theme` variants (light/dark) and `@media` breakpoints
 - [ ] Color functions (`rgb`, `hsl`, `oklch`, named colors), shadows, gradients, transforms
 - [ ] `calc()` with typed units
+- [ ] Benchmark against `lightningcss` (moved from Sprint 5)
 
 **Done when:** a complete widget theme (states, tokens, themes) can be expressed and resolved.
 
