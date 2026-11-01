@@ -1,0 +1,141 @@
+//! Serializer output and `T → .rost → T` round trips through both deserializers.
+#![cfg(feature = "serde")]
+
+use std::collections::{BTreeMap, HashMap};
+
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
+enum Shape {
+    Empty,
+    Circle(f64),
+    Rect(u32, u32),
+    Poly { points: Vec<(i32, i32)>, closed: bool },
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
+struct Item {
+    id: u64,
+    name: String,
+    price: f64,
+    tags: Vec<String>,
+    shape: Shape,
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
+struct Doc {
+    title: String,
+    version: u32,
+    debug: bool,
+    ratio: f32,
+    offset: i64,
+    letter: char,
+    nothing: Option<String>,
+    something: Option<Vec<u8>>,
+    unit: (),
+    items: Vec<Item>,
+    grid: Vec<Vec<i16>>,
+    ports: BTreeMap<u16, String>,
+    env: HashMap<String, String>,
+    mode: Shape,
+    pair: (String, bool),
+}
+
+fn sample() -> Doc {
+    Doc {
+        title: "quotes \" back\\slash ]bracket[ {brace} , ; : = | // not a comment".into(),
+        version: 3,
+        debug: false,
+        ratio: 0.1,
+        offset: i64::MIN,
+        letter: '🦀',
+        nothing: None,
+        something: Some(vec![0, 255]),
+        unit: (),
+        items: vec![
+            Item { id: 1, name: "line\nbreak\ttab\r\u{1}".into(), price: 1.0, tags: vec![], shape: Shape::Empty },
+            Item {
+                id: u64::MAX,
+                name: "".into(),
+                price: -0.0,
+                tags: vec!["a, b".into(), "[c]".into()],
+                shape: Shape::Poly { points: vec![(0, 0), (-1, 2)], closed: true },
+            },
+            Item { id: 2, name: "null".into(), price: 1e300, tags: vec!["true".into()], shape: Shape::Rect(3, 4) },
+        ],
+        grid: vec![vec![1, -2], vec![], vec![3]],
+        ports: BTreeMap::from([(80, "http".into()), (443, "https".into())]),
+        env: HashMap::from([("PATH".into(), "/bin".into())]),
+        mode: Shape::Circle(2.5),
+        pair: ("x".into(), true),
+    }
+}
+
+fn round_trip<T: Serialize + for<'de> Deserialize<'de> + PartialEq + std::fmt::Debug>(value: &T) {
+    for text in [rost::to_string(value).unwrap(), rost::to_string_pretty(value).unwrap()] {
+        let back: T = rost::from_str(&text).unwrap_or_else(|e| panic!("from_str failed: {e}\n{text}"));
+        assert_eq!(&back, value, "from_str round trip of\n{text}");
+        let template = rost::Template::parse(&text).unwrap_or_else(|e| panic!("Template::parse failed: {e:?}\n{text}"));
+        let back: T = rost::from_template(&template).unwrap_or_else(|e| panic!("from_template failed: {e}\n{text}"));
+        assert_eq!(&back, value, "from_template round trip of\n{text}");
+    }
+}
+
+#[test]
+fn every_shape_round_trips_through_both_layouts() {
+    round_trip(&sample());
+    round_trip(&Shape::Rect(1, 2));
+    round_trip(&Shape::Poly { points: vec![], closed: false });
+    round_trip(&BTreeMap::from([("a".to_string(), vec![Shape::Empty, Shape::Circle(1.5)])]));
+}
+
+#[test]
+fn compact_and_pretty_layouts() {
+    #[derive(Serialize)]
+    struct Window {
+        title: &'static str,
+        size: (u32, u32),
+        mode: Shape,
+        shapes: Vec<Shape>,
+        inner: Inner,
+        empty: Vec<u8>,
+    }
+    #[derive(Serialize)]
+    struct Inner {
+        a: Option<u8>,
+    }
+    let w = Window {
+        title: "Main",
+        size: (1280, 720),
+        mode: Shape::Empty,
+        shapes: vec![Shape::Circle(1.0), Shape::Empty],
+        inner: Inner { a: None },
+        empty: vec![],
+    };
+    assert_eq!(
+        rost::to_string(&w).unwrap(),
+        "title: \"Main\", size [1280, 720], mode: Empty, shapes [{ Circle: 1.0 }, Empty], inner { a: null }, empty []"
+    );
+    assert_eq!(
+        rost::to_string_pretty(&w).unwrap(),
+        "title: \"Main\"\nsize [1280, 720]\nmode: Empty\nshapes [\n    {\n        Circle: 1.0\n    },\n    Empty\n]\ninner {\n    a: null\n}\nempty []\n"
+    );
+    assert_eq!(rost::to_string_pretty(&Shape::Rect(1, 2)).unwrap(), "Rect [1, 2]\n");
+    assert_eq!(String::from_utf8(rost::to_vec(&Shape::Circle(0.5)).unwrap()).unwrap(), "Circle: 0.5");
+
+    let mut buf = Vec::new();
+    rost::to_writer_pretty(&mut buf, &BTreeMap::from([(1u8, true)])).unwrap();
+    assert_eq!(buf, b"1: true\n");
+}
+
+#[test]
+fn unrepresentable_values_are_errors() {
+    let err = |r: Result<String, rost::Error>| r.unwrap_err().to_string();
+    assert!(err(rost::to_string(&42)).contains("document root"));
+    assert!(err(rost::to_string(&vec![1])).contains("not a list"));
+    assert!(err(rost::to_string(&Shape::Empty)).contains("document root"));
+    assert!(err(rost::to_string(&HashMap::from([("two words", 1)]))).contains("`two words` cannot be written as a .rost key"));
+    assert!(err(rost::to_string(&HashMap::from([("#x", 1)]))).contains("cannot be written"));
+    assert!(err(rost::to_string(&HashMap::from([("v", f64::NAN)]))).contains("non-finite"));
+    assert!(err(rost::to_string(&HashMap::from([(vec![1], 1)]))).contains("map keys must be"));
+}
