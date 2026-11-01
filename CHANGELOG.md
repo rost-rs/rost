@@ -3,9 +3,15 @@
 All notable changes per release checkpoint. Checkpoints are defined in
 [`SPRINTS.md`](SPRINTS.md#release-checkpoints). Versions below `1.0.0` may break the API.
 
-## Unreleased (Sprints 6-8)
+## 0.2.0-alpha.2 — 2026-11-01
+
+Second downloadable checkpoint (Sprints 6–8): indexed structure, `.rostc`, `Doc`, generated loaders, live reload and typed
+configuration. Tag: `v0.2.0-alpha.2`. Try it with `scripts/rost-init.sh`.
 
 ### Added (Sprint 8)
+- `scripts/rost-init.sh`: builds a themed terminal app (three themes, live edits, rejected edits, `t` patching
+  `app.rost`); `scripts/demo-test.py` drives it in a pseudo-terminal and runs in CI.
+- `Overrides::merge`.
 - `#[derive(Rost)]` for unit enums, newtype structs (and, through serde, data enums and tuple
   structs); `rename_all`; field attributes `optional`, `flatten`, `range`, `one_of`, `regex`.
 - `rost::validate`, with errors at the line and column of the key and the field path.

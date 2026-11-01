@@ -57,7 +57,7 @@ Add `rost` to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-rost = { git = "https://github.com/rost-rs/rost.git", tag = "v0.2.0-alpha.1" }
+rost = { git = "https://github.com/rost-rs/rost.git", tag = "v0.2.0-alpha.2" }
 ```
 
 ### 1. Document Parsing & Querying

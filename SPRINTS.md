@@ -33,13 +33,13 @@ They are kept under *Later*, after `0.2`.
 ## Release checkpoints
 
 Pre-release versions are cut from `main` so a given state can be downloaded and pinned
-(`rost = { git = "https://github.com/rost-rs/rost.git", tag = "v0.2.0-alpha.1" }`).
+(`rost = { git = "https://github.com/rost-rs/rost.git", tag = "v0.2.0-alpha.2" }`).
 Nothing is published to crates.io until `0.2.0` (Sprint 12).
 
 | Checkpoint | Version | Reached when | Status |
 |---|---|---|---|
 | Alpha 1 | `0.2.0-alpha.1` | Sprint 5 merged: fast core, serde, JSON superset and strict JSON API, CI perf gate | **released** (2026-11-01) |
-| Alpha 2 | `0.2.0-alpha.2` | Sprint 8 merged: perfect hot reload and typed configuration (`derive`, validation, spans) | pending |
+| Alpha 2 | `0.2.0-alpha.2` | Sprint 8 merged: perfect hot reload and typed configuration (`derive`, validation, spans) | **released** (2026-11-01) |
 | Beta 1 | `0.2.0-beta.1` | Sprint 10 merged: templates, imports, profiles and author tooling (CLI, editor grammar) | pending |
 | Beta 2 | `0.2.0-beta.2` | Sprint 11 merged: live state, transactions and write-back preserving comments | pending |
 | RC / Release | `0.2.0-rc.1` → `0.2.0` | Sprint 12 merged: spec, docs, CI hardening, WASM; published on crates.io | pending |
