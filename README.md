@@ -304,6 +304,29 @@ to the serde reader, so `rost::load` and `rost::from_str` return the same value 
 
 ---
 
+### 10. Live reload (`watch` feature)
+
+```rust
+use rost::{Reloader, Rost};
+
+#[derive(Rost)]
+struct Theme { title: String, width: u32 }
+
+let theme = Reloader::<Theme>::watch_load("theme.rost")?;   // fails if the file is invalid
+theme.on_error(|e| eprintln!("rejected: {e}"));             // "theme.rost:3:9: cannot parse …"
+theme.on_change_path("width", |c| println!("{:?} -> {:?}", c.old, c.new));
+
+loop {
+    let t = theme.get();   // lock-free snapshot; never a half-written value
+    // draw(&t) …
+}
+```
+
+A broken edit never reaches the program: the previous value stays and the error carries the
+file, line and column. Saves by rename, bursts of writes and rewrites with identical content
+are handled. Measured end to end (write → new value visible): median **21 ms**, of which 20 ms
+is the debounce. 1000 files saved three times each all end on their last write.
+
 ## Testing & Benchmarks
 
 Run the test suite (unit, integration, doc tests and a deterministic stress test that
