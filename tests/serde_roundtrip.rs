@@ -205,3 +205,37 @@ fn value_index_mut_on_scalar_panics() {
     let mut v = rost::Value::from(1);
     v["a"] = rost::Value::Null;
 }
+
+#[test]
+fn rost_macro_builds_values() {
+    use rost::{rost, Value};
+
+    let n = 7;
+    let v = rost!({
+        a: 1,
+        "b-c": [1, -2, 3.5, "x", null, [true], { k: n * 2 }],
+        nested: { deep: { deeper: "yes" } },
+        empty_list: [],
+        empty_block: {},
+        computed: format!("{n}!"),
+        opt: Some(1u8),
+    });
+    assert_eq!(v["a"], 1);
+    assert_eq!(v["b-c"][1], -2);
+    assert_eq!(v["b-c"][2], 3.5);
+    assert!(v["b-c"][4].is_null());
+    assert_eq!(v["b-c"][5][0], true);
+    assert_eq!(v["b-c"][6]["k"], 14);
+    assert_eq!(v["nested"]["deep"]["deeper"], "yes");
+    assert_eq!(v["empty_list"], Value::List(vec![]));
+    assert_eq!(v["empty_block"], Value::Block(rost::Map::new()));
+    assert_eq!(v["computed"], "7!");
+    assert_eq!(v["opt"], 1);
+    assert_eq!(rost!(null), Value::Null);
+    assert_eq!(rost!([1, 2]), Value::from(vec![1, 2]));
+
+    // The literal agrees with the text form.
+    let text = "a: 1\nb-c [1, -2, 3.5, \"x\", null, [true], { k: 14 }]\nnested { deep { deeper: \"yes\" } }\nempty_list []\nempty_block {}\ncomputed: \"7!\"\nopt: 1\n";
+    assert_eq!(rost::from_str::<Value>(text).unwrap(), v);
+    assert_eq!(rost::from_str::<Value>(&rost::to_string_pretty(&v).unwrap()).unwrap(), v);
+}

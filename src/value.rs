@@ -2,7 +2,7 @@
 //!
 //! [`Value`] holds any `.rost` document without a Rust type for it, like
 //! `serde_json::Value`: deserialize into it with [`crate::from_str`], index it with
-//! `value["key"][0]` and write it back with
+//! `value["key"][0]`, build it with [`crate::rost!`] and write it back with
 //! [`crate::to_string`].
 //!
 //! Blocks are [`Map`]s that keep their entries in document order, so a file read into a
@@ -708,4 +708,105 @@ impl<'a> IntoIterator for &'a Map {
     fn into_iter(self) -> Self::IntoIter {
         self.entries.iter().map(|(k, v)| (k, v))
     }
+}
+
+// ------------------------------------------------------------------------------
+// Literal macro
+// ------------------------------------------------------------------------------
+
+/// Builds a [`Value`] from a literal, like `serde_json::json!`.
+///
+/// Blocks are `{ key: value, … }` with identifier or string keys; lists are `[ … ]`;
+/// `null` is [`Value::Null`]; anything else is an expression converted with
+/// [`Value::from`].
+///
+/// # Examples
+///
+/// ```
+/// use rost::rost;
+///
+/// let phone = 2345678;
+/// let john = rost!({
+///     name: "John Doe",
+///     age: 43,
+///     "favourite-color": null,
+///     phones: ["+44 1234567", format!("+44 {phone}")],
+///     address: { city: "London", zip: None::<String> },
+/// });
+/// assert_eq!(john["phones"][1], "+44 2345678");
+/// assert_eq!(
+///     john.to_string(),
+///     "name: \"John Doe\", age: 43, favourite-color: null, phones [\"+44 1234567\", \"+44 2345678\"], address { city: \"London\", zip: null }"
+/// );
+/// ```
+#[macro_export]
+macro_rules! rost {
+    (null) => {
+        $crate::Value::Null
+    };
+    ([]) => {
+        $crate::Value::List(::std::vec::Vec::new())
+    };
+    ([ $($tt:tt)+ ]) => {{
+        let mut list = ::std::vec::Vec::new();
+        $crate::__rost_list!(list () $($tt)+);
+        $crate::Value::List(list)
+    }};
+    ({}) => {
+        $crate::Value::Block($crate::Map::new())
+    };
+    ({ $($tt:tt)+ }) => {{
+        let mut map = $crate::Map::new();
+        $crate::__rost_map!(map $($tt)+);
+        $crate::Value::Block(map)
+    }};
+    ($other:expr) => {
+        $crate::Value::from($other)
+    };
+}
+
+/// Collects the tokens of one list item up to a top-level comma.
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __rost_list {
+    ($list:ident ($($item:tt)+) , $($rest:tt)*) => {
+        $list.push($crate::rost!($($item)+));
+        $crate::__rost_list!($list () $($rest)*);
+    };
+    ($list:ident ($($item:tt)*) $next:tt $($rest:tt)*) => {
+        $crate::__rost_list!($list ($($item)* $next) $($rest)*);
+    };
+    ($list:ident ($($item:tt)+)) => {
+        $list.push($crate::rost!($($item)+));
+    };
+    ($list:ident ()) => {};
+}
+
+/// Reads one `key:` of a block literal.
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __rost_map {
+    ($map:ident) => {};
+    ($map:ident $key:ident : $($rest:tt)+) => {
+        $crate::__rost_entry!($map (stringify!($key)) () $($rest)+);
+    };
+    ($map:ident $key:literal : $($rest:tt)+) => {
+        $crate::__rost_entry!($map ($key) () $($rest)+);
+    };
+}
+
+/// Collects the tokens of one block value up to a top-level comma.
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __rost_entry {
+    ($map:ident ($key:expr) ($($value:tt)+) , $($rest:tt)*) => {
+        $map.insert($key, $crate::rost!($($value)+));
+        $crate::__rost_map!($map $($rest)*);
+    };
+    ($map:ident ($key:expr) ($($value:tt)*) $next:tt $($rest:tt)*) => {
+        $crate::__rost_entry!($map ($key) ($($value)* $next) $($rest)*);
+    };
+    ($map:ident ($key:expr) ($($value:tt)+)) => {
+        $map.insert($key, $crate::rost!($($value)+));
+    };
 }
