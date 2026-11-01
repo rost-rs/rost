@@ -1276,3 +1276,15 @@ fn test_serde_map_keys_beyond_strings() {
     assert_eq!(rost::from_template::<Doc>(&Template::parse(src).unwrap()).unwrap(), expected);
     assert!(rost::from_str::<Doc>(&src.replace("80:", "web:")).unwrap_err().to_string().contains("invalid u16 map key: web"));
 }
+
+#[cfg(feature = "serde")]
+#[test]
+fn test_from_reader_reads_streams() {
+    use std::collections::HashMap;
+
+    let doc: HashMap<String, u32> = rost::from_reader(std::io::Cursor::new(b"a: 1\nb: 2\n".to_vec())).unwrap();
+    assert_eq!(doc, HashMap::from([("a".into(), 1), ("b".into(), 2)]));
+
+    let invalid = rost::from_reader::<_, HashMap<String, u32>>(std::io::Cursor::new(b"a: \xff\n".to_vec()));
+    assert!(invalid.unwrap_err().to_string().starts_with("I/O error"));
+}

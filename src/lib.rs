@@ -107,7 +107,7 @@ pub use object::RostObject;
 #[cfg(feature = "serde")]
 pub use de::{from_block, from_template, DeError};
 #[cfg(feature = "serde")]
-pub use text::{from_slice, from_str};
+pub use text::{from_reader, from_slice, from_str};
 
 use std::fs;
 use std::path::{Path, PathBuf};

@@ -64,6 +64,29 @@ pub fn from_slice<'de, T: de::Deserialize<'de>>(bytes: &'de [u8]) -> Result<T, D
     from_str(src)
 }
 
+/// Deserializes a `.rost` document from an I/O stream.
+///
+/// The stream is read to the end first, so `T` must own its data
+/// ([`DeserializeOwned`](de::DeserializeOwned)); use [`from_str`] to borrow strings.
+///
+/// # Examples
+///
+/// ```
+/// #[derive(serde::Deserialize)]
+/// struct Config {
+///     port: u16,
+/// }
+///
+/// let file = std::io::Cursor::new("port: 8080\n");
+/// let config: Config = rost::from_reader(file).unwrap();
+/// assert_eq!(config.port, 8080);
+/// ```
+pub fn from_reader<R: std::io::Read, T: de::DeserializeOwned>(mut reader: R) -> Result<T, DeError> {
+    let mut src = String::new();
+    reader.read_to_string(&mut src).map_err(|e| DeError(format!("I/O error: {e}")))?;
+    from_str(&src)
+}
+
 /// Byte classes skipped between entries: whitespace, separators.
 const TRIVIA: [bool; 256] = {
     let mut table = [false; 256];
