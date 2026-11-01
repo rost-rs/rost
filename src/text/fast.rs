@@ -26,6 +26,27 @@ pub enum Field {
     End,
 }
 
+/// A position in a [`Fast`] cursor, from [`Fast::mark`].
+#[derive(Clone, Copy)]
+pub struct Mark {
+    pos: usize,
+    pending: Option<Pending>,
+}
+
+/// Splits a leading `line:column: ` off an error message.
+fn split_position(msg: &str) -> (Option<&str>, &str) {
+    let mut parts = msg.splitn(3, ':');
+    if let (Some(l), Some(c), Some(_)) = (parts.next(), parts.next(), parts.next())
+        && l.parse::<u32>().is_ok()
+        && c.trim().parse::<u32>().is_ok()
+    {
+        let end = l.len() + 1 + c.len() + 1;
+        let rest_start = end + msg[end..].len() - msg[end..].trim_start().len();
+        return (Some(&msg[..rest_start]), &msg[rest_start..]);
+    }
+    (None, msg)
+}
+
 /// A cursor over the entries of a block or of the document root.
 pub struct Fast<'a, 'de>(Entries<'a, 'de>);
 
@@ -92,6 +113,17 @@ pub fn load<'de, T: Load<'de>>(src: &'de str) -> Result<T, DeError> {
     Ok(value)
 }
 
+/// Reads `path` and loads it into a `T`, like [`load`]. Errors are prefixed with the path:
+/// `config.rost:4:3: field `window.height`: …`.
+pub fn load_file<T: for<'a> Load<'a>>(path: impl AsRef<std::path::Path>) -> Result<T, DeError> {
+    let path = path.as_ref();
+    let text = std::fs::read_to_string(path).map_err(|e| DeError::new(format!("{}: {e}", path.display())))?;
+    load(&text).map_err(|e| {
+        let sep = if split_position(e.message()).0.is_some() { ":" } else { ": " };
+        DeError::new(format!("{}{sep}{}", path.display(), e.message()))
+    })
+}
+
 impl<'a, 'de> Fast<'a, 'de> {
     /// Reads the next entry's key and matches it against `names`. `hint` is the index of the
     /// name expected next (entries usually come in declaration order), tried first.
@@ -121,29 +153,60 @@ impl<'a, 'de> Fast<'a, 'de> {
         }
     }
 
-    /// Prefixes `err` with the `line:column` of the entry just read, unless it already
-    /// carries a position (an error from a nested block does).
+    /// Adds to `err` where it happened: the `line:column` of the entry just read (unless the
+    /// error already has one) and the dotted path of the field (`window.width`).
+    ///
+    /// Syntax errors keep their own position and text; value errors (a number that does not
+    /// parse, a validation that failed, a missing field of a nested block) become
+    /// `4:3: field `window.height`: …`.
     #[cold]
     pub fn locate(&self, err: DeError) -> DeError {
         let p = &*self.0.p;
         let msg = err.message();
-        let mut parts = msg.splitn(3, ':');
-        let positioned = matches!(
-            (parts.next(), parts.next(), parts.next()),
-            (Some(l), Some(c), Some(_)) if l.parse::<u32>().is_ok() && c.trim().parse::<u32>().is_ok()
-        );
-        if positioned || !p.locate {
-            return err;
+        let (position, rest) = split_position(msg);
+        let key = self.0.key;
+        let rest = match rest.strip_prefix("field `") {
+            Some(inner) if !key.is_empty() => format!("field `{key}.{inner}"),
+            Some(_) => rest.to_string(),
+            None if position.is_none() && !key.is_empty() => format!("field `{key}`: {rest}"),
+            None => rest.to_string(),
+        };
+        if position.is_some() || !p.locate {
+            return DeError::new(match position {
+                Some(prefix) => format!("{prefix}{rest}"),
+                None => rest,
+            });
         }
         let base = p.src.as_ptr() as usize;
-        let key = self.0.key.as_ptr() as usize;
-        let at = if key >= base && key <= base + p.src.len() { key - base } else { p.pos };
+        let at_key = key.as_ptr() as usize;
+        let at = if at_key >= base && at_key <= base + p.src.len() { at_key - base } else { p.pos };
         let at = at.min(p.bytes.len());
         let before = &p.bytes[..at];
         let line = memchr::Memchr::new(b'\n', before).count() + 1;
         let line_start = memchr::memrchr(b'\n', before).map_or(0, |i| i + 1);
         let column = p.src[line_start..at].chars().count() + 1;
-        DeError::new(format!("{line}:{column}: {msg}"))
+        DeError::new(format!("{line}:{column}: {rest}"))
+    }
+
+    /// Remembers where this block's entries start, to read them again with [`Fast::rewind`]
+    /// (used by `#[rost(flatten)]`).
+    pub fn mark(&self) -> Mark {
+        Mark { pos: self.0.p.pos, pending: self.0.pending }
+    }
+
+    /// Goes back to a [`Mark`] taken on this same cursor.
+    pub fn rewind(&mut self, mark: Mark) {
+        self.0.p.pos = mark.pos;
+        self.0.pending = mark.pending;
+    }
+
+    /// Reads the value of the entry as text (a string, or a bare word such as an enum
+    /// variant name), the way the serde reader reads a `String`.
+    pub fn text_value(&mut self) -> Result<Cow<'de, str>, DeError> {
+        match self.text() {
+            Some(text) => text,
+            None => self.value::<String>().map(Cow::Owned),
+        }
     }
 
     /// Skips the value of the entry just read, validating it.

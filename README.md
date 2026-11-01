@@ -31,6 +31,26 @@ The **`.rost`** declarative specification format bridges the gap between human-r
 
 ---
 
+## Try it in one minute
+
+```sh
+git clone https://github.com/rost-rs/rost.git && cd rost
+scripts/rost-init.sh my-demo --run
+```
+
+The script checks `cargo` (Rust 1.85 or newer) and `git`, declares its dependencies (`rost` with the
+`derive` and `watch` features, and `ratatui` for the terminal UI), writes a small project and builds it.
+The app shows three themes, each in its own `.rost` file, loaded into typed Rust values:
+
+- edit `themes/dark.rost` in another terminal and the colors change on screen, no restart;
+- break a file on purpose: the last good value stays and the error shows its line and column;
+- press `t` to switch theme: the app patches `app.rost` (comments and layout intact) and the hot
+  reload picks it up like any other edit; a theme name that does not exist is rejected;
+- `--set title=hello` or `DEMO_TITLE=hello` override `app.rost` without editing it.
+
+Outside a checkout the script uses the released tag from git; `ROST_PATH=/path/to/rost` forces a local copy.
+CI generates the demo and drives its terminal UI in a pseudo-terminal (`scripts/demo-test.py`).
+
 ## Quick Start
 
 Add `rost` to your `Cargo.toml`:
@@ -326,6 +346,44 @@ A broken edit never reaches the program: the previous value stays and the error 
 file, line and column. Saves by rename, bursts of writes and rewrites with identical content
 are handled. Measured end to end (write → new value visible): median **21 ms**, of which 20 ms
 is the debounce. 1000 files saved three times each all end on their last write.
+
+### 11. Typed configuration (`derive` feature)
+
+```rust
+use rost::{types::{Color, Duration}, Describe, Rost};
+
+#[derive(Rost, Describe)]
+#[rost(rename_all = "kebab-case")]
+enum Mode { DarkTheme, LightTheme }
+
+#[derive(Rost, Describe)]
+struct Window {
+    /// Width in pixels.
+    #[rost(range(min = 100, max = 4096))]
+    width: u32,
+    #[rost(one_of("main", "tool"), default)]
+    kind: String,
+}
+
+#[derive(Rost, Describe)]
+struct Config { mode: Mode, window: Window, accent: Color, timeout: Duration }
+
+let config: Config = rost::load_file("app.rost")?;
+// app.rost:3:3: field `window.width`: 5000 is out of range: expected 100 to 4096
+```
+
+- **Attributes:** `rename`, `rename_all`, `default`/`optional`, `serde`, `flatten`, `range(min, max)`,
+  `one_of(...)` and `regex = "..."` (feature `regex`). Errors carry file, line, column and the field path.
+- **Types:** unit enums, newtype structs and `Color`, `Dimension`, `Duration`, `Percentage`, `Path`
+  (`rost::types`) are read natively. Enums with data and tuple structs read through serde (derive
+  `Deserialize` as well).
+- **Overrides:** `Overrides::from_env("APP")` (`APP_WINDOW__WIDTH=800`), `Overrides::from_args(args)`
+  (`--set window.width=800`) and `rost::load_with(text, &overrides)` replace values in the text without
+  touching comments or layout; a value an override made invalid is reported as the override.
+- **Schema:** `Config::describe().to_json_schema()` for editor autocompletion and validation,
+  `.to_rost_schema()` for a readable `.rost` schema; `///` docs become descriptions.
+- **Live:** `Reloader::<Config>::watch_load(path)` validates before it swaps, and
+  `.validate(|c| ...)` adds cross-field rules; a failing edit leaves the running value alone.
 
 ## Testing & Benchmarks
 

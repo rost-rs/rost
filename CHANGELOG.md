@@ -3,7 +3,21 @@
 All notable changes per release checkpoint. Checkpoints are defined in
 [`SPRINTS.md`](SPRINTS.md#release-checkpoints). Versions below `1.0.0` may break the API.
 
-## Unreleased (Sprints 6-7)
+## Unreleased (Sprints 6-8)
+
+### Added (Sprint 8)
+- `#[derive(Rost)]` for unit enums, newtype structs (and, through serde, data enums and tuple
+  structs); `rename_all`; field attributes `optional`, `flatten`, `range`, `one_of`, `regex`.
+- `rost::validate`, with errors at the line and column of the key and the field path.
+- `rost::types::{Color, Dimension, Duration, Percentage, Path}`.
+- `#[derive(Describe)]`, `TypeDesc::{to_json_schema, to_rost_schema}`.
+- `rost::{load_file, Overrides, load_with, load_file_with}`: environment and command-line overrides.
+- `ReloaderBuilder::validate`, `Reloader::watch_load_with`.
+- Feature `regex`.
+
+### Changed (Sprint 8)
+- Typed-loader errors read `L:C: field `path`: message`; a missing field is `field `x`: missing`.
+
 
 ### Added (Sprint 7, feature `watch`)
 - `rost::Reloader<T>`: a typed value that follows its file. Lock-free `get()`, atomic swap,

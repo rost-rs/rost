@@ -120,7 +120,7 @@ pub fn from_reader<R: std::io::Read, T: de::DeserializeOwned>(mut reader: R) -> 
 }
 
 mod fast;
-pub use fast::{load, Fast, Field, Load};
+pub use fast::{load, load_file, Fast, Field, Load, Mark};
 
 /// Byte classes skipped between entries: whitespace, separators.
 const TRIVIA: [bool; 256] = {
@@ -975,5 +975,78 @@ impl<'de> Deserializer<'de> for Scalar<'_, 'de> {
     serde::forward_to_deserialize_any! {
         i128 u128 char bytes byte_buf unit unit_struct newtype_struct seq tuple
         tuple_struct map struct identifier ignored_any
+    }
+}
+
+/// Where an entry's value sits in the source (see [`scan_entries`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Span {
+    /// A scalar: the byte range of its text, quotes included.
+    Scalar { start: usize, end: usize },
+    /// A block: the byte offset of its closing `}`.
+    Block { close: usize },
+}
+
+/// An entry's dotted path and where its value sits.
+pub(crate) type Located = (Vec<String>, Span);
+
+/// Lists every scalar and block of a `.rost` document with its dotted path and byte span,
+/// so a value can be replaced in the text without disturbing the rest of the file.
+/// `None` for a document wrapped in `{ … }` (JSON style).
+pub(crate) fn scan_entries(src: &str) -> Result<Option<Vec<Located>>, DeError> {
+    let mut parser = Parser { src, bytes: src.as_bytes(), pos: 0, locate: true };
+    parser.skip_trivia();
+    if parser.peek() == Some(b'{') || parser.peek() == Some(b'[') {
+        return Ok(None);
+    }
+    let mut out = Vec::new();
+    scan_block(&mut parser, true, &mut Vec::new(), &mut out)?;
+    Ok(Some(out))
+}
+
+fn scan_block(p: &mut Parser<'_>, root: bool, path: &mut Vec<String>, out: &mut Vec<Located>) -> Result<(), DeError> {
+    let mut entries = Entries { p, root, key: "", pending: None };
+    loop {
+        let key = match entries.next_entry() {
+            Ok(Some(key)) => key.to_string(),
+            Ok(None) => return Ok(()),
+            Err(Detour::EscapedKey(key)) => unescape(key).into_owned(),
+            Err(Detour::Error(e)) => return Err(e),
+        };
+        path.push(key);
+        let mut done = false;
+        match entries.pending {
+            Some(Pending::Block) => {
+                entries.pending = None;
+                scan_block(&mut *entries.p, false, path, out)?;
+                out.push((path.clone(), Span::Block { close: entries.p.pos - 1 }));
+                done = true;
+            }
+            Some(Pending::Scalar) => {
+                let at = skip_inline_ws(entries.p.bytes, entries.p.pos);
+                match entries.p.bytes.get(at) {
+                    Some(b'{') => {
+                        entries.pending = None;
+                        entries.p.pos = at + 1;
+                        scan_block(&mut *entries.p, false, path, out)?;
+                        out.push((path.clone(), Span::Block { close: entries.p.pos - 1 }));
+                        done = true;
+                    }
+                    Some(b'[') => {}
+                    _ => {
+                        let (value, quote) = entries.p.read_scalar()?;
+                        entries.pending = None;
+                        let end = if quote == QuoteStyle::Bare { at + value.len() } else { entries.p.pos };
+                        out.push((path.clone(), Span::Scalar { start: at, end }));
+                        done = true;
+                    }
+                }
+            }
+            _ => {}
+        }
+        if !done {
+            entries.next_value::<IgnoredAny>()?;
+        }
+        path.pop();
     }
 }

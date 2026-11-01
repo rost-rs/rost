@@ -400,6 +400,22 @@ impl<T: Send + Sync + 'static> ReloaderBuilder<T> {
         self
     }
 
+    /// Adds a check on the loaded value (a cross-field rule, a limit that depends on another
+    /// setting). A value that fails it is a rejected edit, exactly like a syntax error: the
+    /// running value stays.
+    pub fn validate<F>(mut self, check: F) -> Self
+    where
+        F: Fn(&T) -> Result<(), String> + Send + Sync + 'static,
+    {
+        let inner = self.loader;
+        self.loader = Box::new(move |text| {
+            let value = inner(text)?;
+            check(&value).map_err(ReloadError::new)?;
+            Ok(value)
+        });
+        self
+    }
+
     /// Loads the file once (failing if it is unreadable or invalid) and starts watching it.
     pub fn build(self) -> Result<Reloader<T>, ReloadError> {
         let canon = |p: &Path| p.canonicalize().map_err(|e| ReloadError::new(e.to_string()).at(p));
@@ -577,6 +593,15 @@ impl<T: for<'a> crate::Load<'a> + Send + Sync + 'static> Reloader<T> {
     /// it current.
     pub fn watch_load(path: impl AsRef<Path>) -> Result<Self, ReloadError> {
         Self::watch(path, |text| crate::load(text).map_err(ReloadError::from_display))
+    }
+}
+
+#[cfg(feature = "derive")]
+impl<T: for<'a> crate::Load<'a> + Send + Sync + 'static> Reloader<T> {
+    /// Like [`watch_load`](Self::watch_load) with `overrides` (environment, command line)
+    /// applied on top of every version of the file.
+    pub fn watch_load_with(path: impl AsRef<Path>, overrides: crate::Overrides) -> Result<Self, ReloadError> {
+        Self::watch(path, move |text| crate::load_with(text, &overrides).map_err(ReloadError::from_display))
     }
 }
 
