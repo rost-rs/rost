@@ -163,12 +163,13 @@ i7-13650HX, pinned to one core; `cargo bench --features serde --bench compare`):
 - [x] Larger benchmark corpus: canada / citm_catalog / twitter, fetched by `scripts/fetch-corpus.sh` (`benches/corpus.rs`)
 - [x] Profile-driven parser optimizations: SWAR string scan in strict JSON, `memchr3` list delimiting, hot-path recovery after the grammar changes
 - [ ] Typed loading clearly ahead of `serde_json` on compact layouts — **not reached**: on par (within ~7%), moved to Sprint 6
-- [x] CI job that fails on performance regressions (`scripts/perf-gate.sh`: base vs PR in the same job, alternating rounds, >10% fails)
+- [x] CI job that fails on performance regressions (`scripts/perf-gate.sh`; since Sprint 6 it counts instructions under valgrind, >3% fails)
 
 **Done when:** README shows reproducible numbers where `rost` leads or ties in its target workloads.
-✅ Leads on small configs (load ~1.2×, write ~2×), pretty writing (~1.5×), dynamic trees vs
+✅ Leads on writing small configs (~2×), pretty writing (~1.5×), dynamic trees vs
 `serde_json`/`simd-json` and query-ready indexing (canada indexed in 0.9 ms, faster than
-`serde_json` validates it); ties on large typed loads. Behind: `sonic-rs`'s arena DOM
+`serde_json` validates it); ties on large typed loads and on small config loads (a Sprint 5 reading of 1.2× on
+small configs was a cool-machine measurement; interleaved A/B in Sprint 6 shows parity). Behind: `sonic-rs`'s arena DOM
 (~4× faster than any owned tree) and strict validation of number-heavy JSON (canada 1.7×).
 
 | Measure (pinned) | Sprint 4 tip | Sprint 5 |
@@ -185,7 +186,7 @@ i7-13650HX, pinned to one core; `cargo bench --features serde --bench compare`):
 
 **Goal:** every lookup is O(1) or O(depth), with no rebuilding of views.
 
-- [ ] Typed loading clearly ahead of `serde_json` on compact layouts — **not reached**: measured on par (see below)
+- [ ] Typed loading clearly ahead of `serde_json` on compact layouts — **not reached**: with generated loaders (`#[derive(Rost)]`, `rost::load`) the compact layout is 4-7% ahead of `serde_json` and the multi-line layout level with it (see below)
 - [x] Arena-backed `Value`: `rost::doc::Doc` keeps a whole document on one flat tape of 16-byte nodes; keys and strings are offsets into the source. `Doc::from_json` 5.07–5.11 ms vs `sonic_rs::Value` 4.79–4.84 ms (1.06×; the owned `Value` takes 19 ms, 4× apart before); `Doc::from_rost` 8.1–8.4 ms vs `rost::Value` 21 ms
 - [x] Block tree encoded in the bytecode: every block-start record carries parent, end, first child and next sibling (`Block`, `Template::block`, `root_blocks`, `block_path`)
 - [x] Block lookup without scanning: `find_block` resolves through a name index and copies only the block it finds (100 calls on 5000 blocks: 497M → 3.1M instructions); `block_path` follows the tree links with no index at all
@@ -200,20 +201,24 @@ i7-13650HX, pinned to one core; `cargo bench --features serde --bench compare`):
 **Done when:** `find_block` / `query_*` no longer allocate and scale independently of document size.
 *Status: met. `list_queries_x100` 995M → 2.4M instructions, `find_block_x100` 497M → 3.1M, on 5000 blocks.*
 
-**Typed loading, measured (pinned core, interleaved runs, 50k records → `HashMap<String, Item>`):**
-rost compact layout 445M cycles vs `serde_json` 447M (parity); on the multi-line layout rost is
-7-8% faster than at the start of the sprint after boxing `DeError` (601M → 555M), but still
-level with `serde_json`. About 40% of the work (allocating the `String`s, hashing, inserting into
-the `HashMap`) is identical for both crates, and what remains is serde's visitor protocol. A
-clearly faster path needs code generated per type (`#[derive(Rost)]`, Sprint 7), not a faster
-generic parser.
+**Typed loading, measured (pinned core, interleaved runs, 50k records → `HashMap<String, Item>`, cycles net of setup):**
+
+| Path | multi-line layout | compact layout |
+|---|---|---|
+| `serde_json` (compact JSON) | 446M | 446M |
+| `rost::from_str` (serde) | 481M (601M at the start of Sprint 6) | 460M |
+| `rost::load` (`#[derive(Rost)]`, generated) | 440M | **427M (−4% vs `serde_json`)** |
+
+About 40% of the work (allocating the `String`s, hashing, inserting into the `HashMap`) is identical for
+every crate; a numeric-only record (no strings) loads in 186M for `serde_json` and 186M for `rost::load`.
+The generated loader removes serde's visitor layer and no more: the parser itself runs at `serde_json`'s speed.
 
 ## Sprint 7 — Rust ergonomics: derive and validation
 
 **Goal:** describe data once as a Rust struct; get parsing, validation, defaults and docs for free.
 
-- [ ] `rost-derive` crate with `#[derive(Rost)]` (replaces `rost_schema!` / `rost_block_schema!`)
-- [ ] Field attributes: `default`, `rename`, `range(min, max)`, `regex`, `one_of`, `optional`
+- [ ] `rost-derive` crate with `#[derive(Rost)]` (replaces `rost_schema!` / `rost_block_schema!`). *Started in Sprint 6: structs with named fields, generics over lifetimes, `rost::load`, `Load`; still to do: enums, tuple structs, type parameters, `rost::load_file`*
+- [ ] Field attributes: `default`, `rename`, `range(min, max)`, `regex`, `one_of`, `optional` (*`default`, `rename` and `serde` exist since Sprint 6*)
 - [ ] Validation errors pointing to the exact source span
 - [ ] JSON Schema / `.rost` schema generation from types (editor autocompletion)
 - [ ] Typed newtypes out of the box: `Color`, `Dimension`, `Duration`, `Percentage`

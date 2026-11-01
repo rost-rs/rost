@@ -273,6 +273,35 @@ and block link of the bytecode), so a damaged or hostile file is an error, never
 an invalid `&str`. With the `mmap` feature, `unsafe Template::mmap_rostc` uses the file in
 place instead of copying it. Documents over 4 GiB are rejected: the bytecode uses `u32` offsets.
 
+### 9. Generated Loaders (`derive`)
+
+```rust
+use rost::Rost;
+
+#[derive(Rost)]
+struct Window {
+    width: u32,
+    #[rost(rename = "title")]
+    caption: String,
+}
+
+#[derive(Rost)]
+struct Config {
+    debug: bool,
+    window: Window,
+    #[rost(serde)] // any field type that implements serde's `Deserialize`
+    tags: Vec<String>,
+    note: Option<String>,
+}
+
+let config: Config = rost::load("debug: true\ntags [a, b]\n#window { width: 1280, title: \"Hi\" }")?;
+# Ok::<(), rost::de::DeError>(())
+```
+
+With the `derive` feature, `#[derive(Rost)]` writes the loop that reads a struct's entries, so
+`rost::load` skips serde's visitor layer. Whatever the generated code does not recognise falls back
+to the serde reader, so `rost::load` and `rost::from_str` return the same value for every document.
+
 ---
 
 ## Testing & Benchmarks
@@ -298,15 +327,15 @@ timings include copying the input, since it parses in place:
 
 | Workload | Contender | Median |
 |---|---|---|
-| 5 MB document → `HashMap<String, Item>` | **`rost::from_str`** (.rost text) | 11.2–11.3 ms |
-| | **`rost::from_str`** reading the JSON text itself | 11.2–11.5 ms |
-| | `serde_json`, one record per line (5.3 MB) | 10.5–10.6 ms |
-| | `serde_json`, pretty-printed like the rost file (7.7 MB) | 11.5–11.7 ms |
-| | `sonic-rs` / `simd-json` | 10.7–10.9 ms / 11.6–11.7 ms |
+| 5 MB document → `HashMap<String, Item>` | **`rost::load`** (`#[derive(Rost)]`), compact layout / multi-line | **10.3–10.7 ms** / 10.95–11.4 ms |
+| | **`rost::from_str`**, compact layout / multi-line | 11.3–11.6 ms / 11.6–12.1 ms |
+| | **`rost::from_str`** reading the JSON text itself | 12.1–12.2 ms |
+| | `serde_json`, one record per line (5.3 MB) | 10.95–11.3 ms |
+| | `sonic-rs` / `simd-json` | 11.2–11.8 ms / 12.1–12.6 ms |
 | | `toml` | 66–76 ms |
-| Small config → struct | **`rost::from_str`** | 125–127 ns |
-| | `serde_json` compact / pretty | 145–155 ns / 167–169 ns |
-| | `sonic-rs` / `simd-json` | 151–155 ns / 272–310 ns |
+| Small config → struct | **`rost::from_str`** | 125–152 ns |
+| | `serde_json` compact / pretty | 144–155 ns / 167–189 ns |
+| | `sonic-rs` / `simd-json` | 151–160 ns / 272–310 ns |
 | | `toml` | 1.1 µs |
 | 5 MB document → dynamic tree | **`rost::Value`** / **`rost::json::from_str`** | 21.0 ms / 18.5–18.9 ms |
 | | **`Doc::from_json`** / **`Doc::from_rost`** (borrowed flat tape) | 5.1 ms / 8.1–8.4 ms |
@@ -334,8 +363,8 @@ Real-world JSON (serde-rs/json-benchmark files, same machine, medians):
 | citm_catalog (1.7 MB) | **0.9 ms** | 0.9 ms | **0.6 ms** | 2.1–2.2 ms | 1.14 ms | 2.3–2.5 ms | 0.96 ms |
 | twitter (0.6 MB, strings) | 0.3 ms | 0.25 ms | 0.27 ms | 1.36–1.43 ms | **0.40 ms** | 1.30–1.38 ms | 0.45 ms |
 
-Small configs load ~1.2× faster than `serde_json` and write ~2× faster; typed loading of
-large documents is on par (within ~7%) with `serde_json` and `sonic-rs`; the dynamic tree
+Small configs load on par with `serde_json` (125–152 ns vs 144–155 ns, depending on the state of the machine) and write ~2× faster; typed loading of
+large documents with `#[derive(Rost)]` is 4–7% ahead of `serde_json` on the compact layout and level on the multi-line one, and `rost::from_str` is within ~7% of it; the dynamic tree
 beats `serde_json::Value` and `simd-json`, and `Doc`, the borrowed flat tape, builds in
 1.06× the time of `sonic-rs`'s arena DOM on the 5 MB document (ahead of it on twitter; 1.5× behind on
 number-heavy canada). Indexing a JSON file for queries is faster than `serde_json` merely
