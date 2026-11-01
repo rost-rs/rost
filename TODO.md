@@ -36,12 +36,12 @@ The execution plan lives in [`SPRINTS.md`](SPRINTS.md).
 - [ ] Formal `SPEC.md` (EBNF/PEG grammar) with a format version (`@rost 1`)
 - [x] Explicit value types in the lexer: string, int, float, bool, null, color, dimension, list, map, reference — instead of "everything is `&str` and gets guessed at query time"
 - [x] Defined string escapes (`\n`, `\t`, `\"`, `\u{...}`) and multi-line / raw strings (`"""` or `r"..."`)
-- [ ] Inline maps/objects (`point { x: 1, y: 2 }` as a value) and lists of objects
+- [ ] Inline maps/objects (`point { x: 1, y: 2 }` as a value) and lists of objects — serde reads and writes `[{ … }, { … }]` since Sprint 4; queries still see list items as text
 - [ ] Block comments `/* */` and doc-comments `///` preserved in the AST
 - [ ] Lossless bidirectional `rost ⇄ JSON` (and `TOML`/`YAML`) conversion with a conformance suite
-- [ ] Serde serializer (`to_string`, `to_writer`) — only a deserializer exists today
+- [x] Serde serializer (`to_string`, `to_string_pretty`, `to_vec`, `to_writer`)
 - [x] Real zero-copy deserialization (`&'de str` borrowed from the buffer, not `visit_string`)
-- [ ] Serde enum support (unit, newtype, struct variants) mapped to `| a, b |`
+- [x] Serde enum support (unit, newtype, tuple, struct variants): bare names and single-entry blocks; `| a, b |` still reads as its first variant
 - [ ] `u32` offset limit (4 GiB): document it or allow `u64` offsets behind a feature
 - [ ] Canonical, idempotent formatter (`rost fmt`)
 
