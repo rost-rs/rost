@@ -897,6 +897,7 @@ pub(crate) fn resolve_slice<'a>(data: &'a [u8], fields: &[u8], idx: usize) -> &'
 ///
 /// A quoted key is followed by its closing `"`; a bare key never is, since bare keys end
 /// at a delimiter or whitespace.
+#[cfg_attr(not(feature = "serde"), allow(dead_code))] // read by the serde deserializers
 pub(crate) fn resolve_key<'a>(data: &'a [u8], fields: &[u8], idx: usize) -> std::borrow::Cow<'a, str> {
     let key = resolve_slice(data, fields, idx);
     let end = read_u32(fields, idx) as usize + key.len();
