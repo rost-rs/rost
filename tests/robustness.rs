@@ -13,6 +13,7 @@ const SEEDS: &[&str] = &[
     "##state \"hover\"\nbody: \"\"\"raw\n\"text\" {}\"\"\"\nesc: \"a\\\"b\\u{1F980}\"\nnil: null\n",
     "palette {\n  bg: #fff\n  inner { x: -1e3, y: .5 }\n}\n// comment\n@rule { fix = f() }\n",
     "\"a key\": 1\n\"q\\\"k\" { \"x y\" [1, { \"n\": null }] }\n\"b\" = f()\n",
+    "{\"a\": [1, {\"b\": \"c\\u00e9\"}, []], \"d\": {\"e\": null, \"f\": -0.5e2}, \"g\": \"\"}\n",
     "items [\n    { id: 1, name: \"a]\" },\n    { id: 2, tags [x, \"y\"] }\n]\ngrid [[1, 2], [3]]\nmode { Move { x: 1 } }\n",
 ];
 

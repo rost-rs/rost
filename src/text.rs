@@ -18,7 +18,7 @@ use crate::de::{DeError, FieldDeserializer, KeyDeserializer, MapEnum};
 use std::borrow::Cow;
 
 use crate::field::{unescape, QuoteStyle};
-use crate::parser::{find_list_end, find_unescaped_quote, find_value_end, trim_trailing_ws, IS_DELIM_OR_WS, RAW_QUOTE};
+use crate::parser::{find_list_end, root_braces, find_unescaped_quote, find_value_end, trim_trailing_ws, IS_DELIM_OR_WS, RAW_QUOTE};
 
 /// Deserializes a `.rost` document from a string in a single pass.
 ///
@@ -403,6 +403,19 @@ enum Pending {
     Enum,
 }
 
+/// Classifies the value after `key:`: `{` and `[` open a block or a list (the JSON
+/// spellings of `key { … }` / `key [ … ]`); anything else is a scalar. Returns where
+/// reading continues.
+#[inline(always)]
+fn colon_value(bytes: &[u8], after_colon: usize) -> (Pending, usize) {
+    let at = skip_inline_ws(bytes, after_colon);
+    match bytes.get(at) {
+        Some(b'{') => (Pending::Block, at + 1),
+        Some(b'[') => (Pending::List, at + 1),
+        _ => (Pending::Scalar, at),
+    }
+}
+
 /// Map over the entries of the root (`root == true`, ends at EOF) or of a block (ends at `}`).
 struct Entries<'a, 'de> {
     p: &'a mut Parser<'de>,
@@ -426,17 +439,17 @@ impl<'de> Entries<'_, 'de> {
             Some(&b) if b != b'#' && b != b'@' && b != b'"' && !IS_DELIM_OR_WS[b as usize] => {
                 let end = key_end(bytes, start);
                 let op = skip_inline_ws(bytes, end);
-                let pending = match bytes.get(op) {
-                    Some(b':') => Pending::Scalar,
-                    Some(b'{') => Pending::Block,
-                    Some(b'[') => Pending::List,
-                    Some(b'|') => Pending::Enum,
+                let (pending, next) = match bytes.get(op) {
+                    Some(b':') => colon_value(bytes, op + 1),
+                    Some(b'{') => (Pending::Block, op + 1),
+                    Some(b'[') => (Pending::List, op + 1),
+                    Some(b'|') => (Pending::Enum, op + 1),
                     _ => {
                         self.p.pos = start;
                         return self.next_entry_slow();
                     }
                 };
-                self.p.pos = op + 1;
+                self.p.pos = next;
                 self.pending = Some(pending);
                 Ok(Some(&self.p.src[start..end]))
             }
@@ -523,18 +536,18 @@ impl<'de> Entries<'_, 'de> {
                     p.pos = start + len + 1;
                     let key = &p.src[start..start + len];
                     p.skip_inline_ws();
-                    let pending = match p.peek() {
-                        Some(b':') => Pending::Scalar,
-                        Some(b'{') => Pending::Block,
-                        Some(b'[') => Pending::List,
-                        Some(b'|') => Pending::Enum,
+                    let (pending, next) = match p.peek() {
+                        Some(b':') => colon_value(p.bytes, p.pos + 1),
+                        Some(b'{') => (Pending::Block, p.pos + 1),
+                        Some(b'[') => (Pending::List, p.pos + 1),
+                        Some(b'|') => (Pending::Enum, p.pos + 1),
                         Some(b'=') => {
                             p.pos = memchr2(b'\n', b'}', &p.bytes[p.pos..]).map_or(p.bytes.len(), |e| p.pos + e);
                             continue;
                         }
                         _ => return Err(p.error("expected `:`, `=`, `|`, `[` or `{` after key")),
                     };
-                    p.pos += 1;
+                    p.pos = next;
                     self.pending = Some(pending);
                     self.escaped_key = escaped;
                     return Ok(Some(key));
@@ -547,11 +560,11 @@ impl<'de> Entries<'_, 'de> {
                         return Err(p.error("expected a key"));
                     }
                     p.skip_inline_ws();
-                    let pending = match p.peek() {
-                        Some(b':') => Pending::Scalar,
-                        Some(b'{') => Pending::Block,
-                        Some(b'[') => Pending::List,
-                        Some(b'|') => Pending::Enum,
+                    let (pending, next) = match p.peek() {
+                        Some(b':') => colon_value(p.bytes, p.pos + 1),
+                        Some(b'{') => (Pending::Block, p.pos + 1),
+                        Some(b'[') => (Pending::List, p.pos + 1),
+                        Some(b'|') => (Pending::Enum, p.pos + 1),
                         Some(b'=') => {
                             // `key = expr` bindings are behaviour, not data.
                             p.pos = memchr2(b'\n', b'}', &p.bytes[p.pos..]).map_or(p.bytes.len(), |e| p.pos + e);
@@ -562,7 +575,7 @@ impl<'de> Entries<'_, 'de> {
                             return Err(p.error("expected `:`, `=`, `|`, `[` or `{` after key"));
                         }
                     };
-                    p.pos += 1;
+                    p.pos = next;
                     self.pending = Some(pending);
                     return Ok(Some(key));
                 }
@@ -613,11 +626,34 @@ struct Root<'a, 'de> {
     p: &'a mut Parser<'de>,
 }
 
+impl<'de> Root<'_, 'de> {
+    /// Runs `f` on the document's block. A document wrapped in `{ … }` (a JSON object) is
+    /// read as its contents, delimited exactly as the bytecode parser does it.
+    fn with_block<R>(self, f: impl FnOnce(Block<'_, 'de>) -> Result<R, DeError>) -> Result<R, DeError> {
+        let p = self.p;
+        let Some((start, end)) = root_braces(&p.bytes[p.pos..]).map(|(s, e)| (p.pos + s, p.pos + e)) else {
+            return f(Block { p, root: true });
+        };
+        // Truncating the input keeps positions absolute for error messages.
+        let mut body = Parser { src: &p.src[..end], bytes: &p.bytes[..end], pos: start, locate: p.locate };
+        let value = f(Block { p: &mut body, root: true })?;
+        p.pos = end + 1;
+        Ok(value)
+    }
+}
+
 impl<'de> Deserializer<'de> for Root<'_, 'de> {
     type Error = DeError;
 
+    /// A document is a block; a document that is a single list (`[ … ]`, as JSON arrays
+    /// are) reads as that list.
     fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, DeError> {
-        Block { p: self.p, root: true }.deserialize_any(visitor)
+        let at = skip_trivia(self.p.bytes, self.p.pos);
+        if self.p.bytes.get(at) == Some(&b'[') {
+            self.p.pos = at + 1;
+            return List { p: self.p }.deserialize_any(visitor);
+        }
+        self.with_block(|block| block.deserialize_any(visitor))
     }
 
     fn deserialize_option<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, DeError> {
@@ -625,7 +661,7 @@ impl<'de> Deserializer<'de> for Root<'_, 'de> {
     }
 
     fn deserialize_ignored_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, DeError> {
-        Block { p: self.p, root: true }.deserialize_ignored_any(visitor)
+        self.with_block(|block| block.deserialize_ignored_any(visitor))
     }
 
     fn deserialize_enum<V: Visitor<'de>>(
@@ -634,7 +670,7 @@ impl<'de> Deserializer<'de> for Root<'_, 'de> {
         variants: &'static [&'static str],
         visitor: V,
     ) -> Result<V::Value, DeError> {
-        Block { p: self.p, root: true }.deserialize_enum(name, variants, visitor)
+        self.with_block(|block| block.deserialize_enum(name, variants, visitor))
     }
 
     serde::forward_to_deserialize_any! {

@@ -252,13 +252,40 @@ fn line_end(raw: &[u8], from: usize) -> usize {
     memchr(b'\n', &raw[from.min(raw.len())..]).map_or(raw.len(), |p| from + p)
 }
 
+/// A document wrapped in `{ … }`, as a JSON object is, reads as its contents: returns
+/// where the contents start and the position of the closing `}` (the last
+/// non-whitespace byte).
+pub(crate) fn root_braces(raw: &[u8]) -> Option<(usize, usize)> {
+    let mut i = 0;
+    loop {
+        while i < raw.len() && WS_LUT[raw[i] as usize] != 0 {
+            i += 1;
+        }
+        if raw[i..].starts_with(b"//") {
+            i = memchr(b'\n', &raw[i..]).map_or(raw.len(), |p| i + p);
+        } else {
+            break;
+        }
+    }
+    if raw.get(i) != Some(&b'{') {
+        return None;
+    }
+    let end = raw.iter().rposition(|b| !b.is_ascii_whitespace())?;
+    (end > i && raw[end] == b'}').then_some((i + 1, end))
+}
+
 fn scan<D: Diagnostics>(raw: &[u8], diag: &mut D) -> Vec<u8> {
+    // Truncating at the closing brace keeps every offset absolute.
+    let (start, raw) = match root_braces(raw) {
+        Some((start, end)) => (start, &raw[..end]),
+        None => (0, raw),
+    };
     let len = raw.len();
     // Pre-allocate assuming an average token density of one field per 24 bytes
     let mut fields = Vec::with_capacity((len / 24).max(1) * 21);
 
-    let mut i = 0;
-    let mut line: u32 = 1;
+    let mut i = start;
+    let mut line: u32 = 1 + count_newlines(&raw[..start]);
 
     // Name spans of currently open blocks; only tracked when diagnostics are enabled.
     let mut open_blocks: Vec<Range<usize>> = Vec::new();
@@ -470,6 +497,17 @@ fn scan<D: Diagnostics>(raw: &[u8], diag: &mut D) -> Vec<u8> {
         if i >= len {
             diag.report(ParseErrorKind::ExpectedOperator, key_start..key_start + key_len as usize);
             break;
+        }
+
+        // `key: { … }` and `key: [ … ]` are the JSON spellings of `key { … }` / `key [ … ]`.
+        if raw[i] == b':' {
+            let mut j = i + 1;
+            while j < len && (raw[j] == b' ' || raw[j] == b'\t') {
+                j += 1;
+            }
+            if j < len && (raw[j] == b'{' || raw[j] == b'[') {
+                i = j;
+            }
         }
 
         match raw[i] {

@@ -1334,3 +1334,32 @@ fn test_serde_quoted_keys() {
     assert_eq!(rost::from_str::<Doc>(src).unwrap(), expected);
     assert_eq!(rost::from_template::<Doc>(&Template::parse(src).unwrap()).unwrap(), expected);
 }
+
+#[cfg(feature = "serde")]
+#[test]
+fn test_json_objects_are_rost_documents() {
+    use serde_json::Value;
+
+    let json = r#"{
+        "name": "rost \"json\" é 🦀 \b\f\n\t\/",
+        "count": -12, "ratio": 1.5e-3, "big": 1E3, "zero": -0,
+        "flags": [true, false, null],
+        "empty_list": [], "empty_obj": {},
+        "nested": {"deep": {"deeper": [1, [2, [3]], {"x": "y"}]}},
+        "items": [{"id": 1, "tags": ["a", "b,c"]}, {"id": 2, "tags": []}],
+        "with space": {"a]b": "}{"}
+    }"#;
+    let expected: Value = serde_json::from_str(json).unwrap();
+    assert_eq!(rost::from_str::<Value>(json).unwrap(), expected);
+    let template = Template::parse(json).unwrap();
+    assert_eq!(rost::from_template::<Value>(&template).unwrap(), expected);
+    assert_eq!(template.query_list("flags"), Some(vec!["true", "false", "null"]));
+    assert_eq!(template.query_raw_value("nested.deep"), None);
+    assert_eq!(template.get_value("count"), Some("-12"));
+
+    // Compact JSON and a top-level array (single-pass path) work too.
+    let compact = serde_json::to_string(&expected).unwrap();
+    assert_eq!(rost::from_str::<Value>(&compact).unwrap(), expected);
+    assert_eq!(rost::from_str::<Vec<u8>>("[1, 2, 3]").unwrap(), vec![1, 2, 3]);
+    assert_eq!(rost::from_str::<Value>(" [{\"a\": 1}] ").unwrap(), serde_json::json!([{"a": 1}]));
+}
