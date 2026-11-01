@@ -89,6 +89,7 @@ pub mod json;
 pub mod malleable;
 pub mod parser;
 pub mod query;
+pub mod rostc;
 pub mod schema;
 pub mod watcher;
 pub mod object;
