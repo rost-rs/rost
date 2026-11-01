@@ -487,3 +487,15 @@ fn keys_that_are_not_words_are_quoted() {
     round_trip(&map);
     round_trip(&BTreeMap::from([("k k".to_string(), vec![BTreeMap::from([("in ner".to_string(), Shape::Empty)])])]));
 }
+
+#[test]
+fn de_error_carries_and_shows_its_message() {
+    let err = rost::de::DeError::new("something broke");
+    assert_eq!(err.message(), "something broke");
+    assert_eq!(err.to_string(), "something broke");
+    assert_eq!(err.clone(), err);
+    // The error is one pointer wide, which keeps the deserializer's results in registers.
+    assert_eq!(std::mem::size_of::<rost::de::DeError>(), std::mem::size_of::<usize>());
+    let parse: Result<u32, _> = rost::from_str::<u32>("x: 1");
+    assert!(parse.is_err());
+}

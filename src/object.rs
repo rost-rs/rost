@@ -155,7 +155,7 @@ impl Template {
             match tag {
                 crate::parser::TAG_BLOCK_START => {
                     let name = crate::parser::resolve_slice(&self.data, &self.fields, idx + 1);
-                    idx += crate::parser::REC_NAMED;
+                    idx += crate::parser::REC_BLOCK_START;
                     let clean_name = name.strip_prefix('#').unwrap_or(name);
                     let full_path = if let Some(p) = stack.last() {
                         format!("{}.{}", p, clean_name)
@@ -199,7 +199,7 @@ impl Template {
                     }
                     crate::parser::TAG_BLOCK_START => {
                         depth += 1;
-                        cur += crate::parser::REC_NAMED;
+                        cur += crate::parser::REC_BLOCK_START;
                     }
                     crate::parser::TAG_BLOCK_END => {
                         depth -= 1;

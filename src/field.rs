@@ -695,6 +695,51 @@ pub(crate) fn unquote(s: &str) -> &str {
     }
 }
 
+/// Iterator over the items of a list or the variants of an enum, returned by
+/// [`Template::query_list_iter`](crate::Template::query_list_iter) and
+/// [`Template::query_enum_iter`](crate::Template::query_enum_iter).
+///
+/// Items borrow from the document; nothing is allocated while iterating.
+#[derive(Debug, Clone)]
+pub struct Items<'a> {
+    inner: ItemsInner<'a>,
+}
+
+#[derive(Debug, Clone)]
+enum ItemsInner<'a> {
+    List(TopLevelSplit<'a>),
+    Enum(TopLevelSplit<'a>),
+    /// Fallback for selectors the path index cannot address (blocks whose name contains `.`).
+    Owned(std::vec::IntoIter<&'a str>),
+}
+
+impl<'a> Items<'a> {
+    pub(crate) fn list(raw: &'a str) -> Self {
+        Self { inner: ItemsInner::List(TopLevelSplit::new(raw, |b| b == b',')) }
+    }
+
+    pub(crate) fn variants(raw: &'a str) -> Self {
+        Self { inner: ItemsInner::Enum(TopLevelSplit::new(raw, |b| matches!(b, b',' | b'|' | b'\n'))) }
+    }
+
+    pub(crate) fn owned(items: Vec<&'a str>) -> Self {
+        Self { inner: ItemsInner::Owned(items.into_iter()) }
+    }
+}
+
+impl<'a> Iterator for Items<'a> {
+    type Item = &'a str;
+
+    #[inline]
+    fn next(&mut self) -> Option<&'a str> {
+        match &mut self.inner {
+            ItemsInner::List(split) => split.next().map(unquote),
+            ItemsInner::Enum(split) => split.next(),
+            ItemsInner::Owned(items) => items.next(),
+        }
+    }
+}
+
 /// Zero-allocation iterator splitting list/enum bodies on separator bytes that are not
 /// nested inside quotes, `(...)`, `[...]` or `{...}`. Items are trimmed and empty items
 /// are skipped.

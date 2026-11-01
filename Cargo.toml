@@ -9,10 +9,16 @@ repository = "https://github.com/rost-rs/rost"
 
 [dependencies]
 memchr = "2.8.3"
+memmap2 = { version = "0.9", optional = true }
+rost-derive = { path = "rost-derive", optional = true }
 serde = { version = "1.0.229", features = ["derive"], optional = true }
 
 [features]
 serde = ["dep:serde"]
+# `Template::mmap_rostc`: load precompiled documents straight from a memory map.
+mmap = ["dep:memmap2"]
+# `#[derive(Rost)]` and `rost::load`: generated loaders that skip serde's visitor protocol.
+derive = ["serde", "dep:rost-derive"]
 
 [dev-dependencies]
 serde = { version = "1.0.229", features = ["derive"] }

@@ -27,7 +27,7 @@ use crate::parser::IS_DELIM_OR_WS;
 
 impl ser::Error for DeError {
     fn custom<T: std::fmt::Display>(msg: T) -> Self {
-        DeError(msg.to_string())
+        DeError::new(msg.to_string())
     }
 }
 
@@ -99,7 +99,7 @@ pub fn to_writer_pretty<W: io::Write, T: ?Sized + Serialize>(mut writer: W, valu
 }
 
 fn io_error(e: io::Error) -> DeError {
-    DeError(format!("I/O error: {e}"))
+    DeError::new(format!("I/O error: {e}"))
 }
 
 fn write_document<T: ?Sized + Serialize>(value: &T, pretty: bool) -> Result<String, DeError> {
@@ -177,8 +177,8 @@ impl Writer {
     /// Writes what goes before a scalar.
     fn scalar_prefix(&mut self, ctx: Ctx<'_>) -> Result<(), DeError> {
         match ctx {
-            Ctx::Root => Err(DeError(
-                "the document root must be a struct, a map or an enum variant with data".into(),
+            Ctx::Root => Err(DeError::new(
+                "the document root must be a struct, a map or an enum variant with data",
             )),
             Ctx::Entry => {
                 self.out.push_str(": ");
@@ -195,8 +195,8 @@ impl Writer {
     fn open(&mut self, ctx: Ctx<'_>, kind: Kind) -> Result<bool, DeError> {
         let brace = if kind == Kind::Block { '{' } else { '[' };
         match ctx {
-            Ctx::Root if kind == Kind::List => Err(DeError(
-                "the document root must be a struct, a map or an enum variant with data, not a list".into(),
+            Ctx::Root if kind == Kind::List => Err(DeError::new(
+                "the document root must be a struct, a map or an enum variant with data, not a list",
             )),
             Ctx::Root => Ok(true),
             Ctx::Entry => {
@@ -445,7 +445,7 @@ impl<'a> ValueSerializer<'a, '_> {
     }
 
     fn non_finite(v: f64) -> DeError {
-        DeError(format!("cannot serialize the non-finite float {v}"))
+        DeError::new(format!("cannot serialize the non-finite float {v}"))
     }
 
     fn int(self, v: i64) -> Result<(), DeError> {
@@ -811,7 +811,7 @@ impl KeySerializer<'_> {
 }
 
 fn key_error() -> DeError {
-    DeError("map keys must be strings, integers, booleans or unit variants".into())
+    DeError::new("map keys must be strings, integers, booleans or unit variants")
 }
 
 impl ser::Serializer for KeySerializer<'_> {

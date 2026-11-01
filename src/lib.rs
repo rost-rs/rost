@@ -82,6 +82,11 @@
 //! assert_eq!(dim.unit, "px");
 //! ```
 
+pub mod block;
+pub mod doc;
+#[cfg(feature = "serde")]
+mod doc_rost;
+mod bytes;
 pub mod error;
 pub mod field;
 mod index;
@@ -89,6 +94,7 @@ pub mod json;
 pub mod malleable;
 pub mod parser;
 pub mod query;
+pub mod rostc;
 pub mod schema;
 pub mod watcher;
 pub mod object;
@@ -103,7 +109,8 @@ mod text;
 pub mod value;
 
 pub use error::{ParseError, ParseErrorKind};
-pub use field::{Dimension, ParsedField, QuoteStyle, Scalar};
+pub use block::{Block, BlockFields, RootBlocks};
+pub use field::{Dimension, Items, ParsedField, QuoteStyle, Scalar};
 pub use malleable::{MalleablePatcher, RostBuilder};
 pub use query::{parse_blocks, BlockView, FieldIter};
 pub use watcher::{CentralWatcher, HotReloadWatcher, ReloadCallback};
@@ -119,8 +126,10 @@ pub use de::DeError as Error;
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 #[cfg(feature = "serde")]
 pub use ser::{to_string, to_string_pretty, to_vec, to_vec_pretty, to_writer, to_writer_pretty};
+#[cfg(feature = "derive")]
+pub use rost_derive::Rost;
 #[cfg(feature = "serde")]
-pub use text::{from_reader, from_slice, from_str};
+pub use text::{from_reader, from_slice, from_str, load, Fast, Field, Load};
 #[cfg(feature = "serde")]
 pub use value::{from_value, Map, Value};
 
@@ -136,9 +145,9 @@ pub struct Template {
     /// File path origin of the template, if loaded from filesystem.
     pub path: PathBuf,
     /// Raw unparsed byte content of the document. Always valid UTF-8.
-    pub(crate) data: Vec<u8>,
+    pub(crate) data: bytes::Bytes,
     /// Compact bytecode array storing tags and Little-Endian `u32` offsets into `data`.
-    pub(crate) fields: Vec<u8>,
+    pub(crate) fields: bytes::Bytes,
     /// Native zero-CPU filesystem watcher if hot-reloading was enabled.
     pub(crate) watcher: Option<Arc<HotReloadWatcher>>,
     /// Path index built on the first dot-path query; must be reset whenever `fields` changes.
@@ -170,8 +179,8 @@ impl Template {
         };
         Ok(Self {
             path: p.to_path_buf(),
-            data,
-            fields,
+            data: data.into(),
+            fields: fields.into(),
             watcher,
             index: OnceLock::new(),
         })
@@ -199,8 +208,8 @@ impl Template {
         let fields = parser::parse_into_bytecode(&data);
         Self {
             path: PathBuf::new(),
-            data,
-            fields,
+            data: data.into(),
+            fields: fields.into(),
             watcher: None,
             index: OnceLock::new(),
         }
@@ -232,8 +241,8 @@ impl Template {
         }
         Ok(Self {
             path: PathBuf::new(),
-            data: src.as_bytes().to_vec(),
-            fields,
+            data: src.as_bytes().to_vec().into(),
+            fields: fields.into(),
             watcher: None,
             index: OnceLock::new(),
         })
@@ -360,24 +369,39 @@ impl Template {
     }
 
     /// Finds a specific block by its selector or name (e.g., `#button.primary` or `avatar`).
+    ///
+    /// Resolved through the path index; only the fields of the block found are copied.
+    /// Use [`Template::block`] to navigate without copying anything.
     pub fn find_block(&self, selector: &str) -> Option<BlockView<'_>> {
-        let clean = selector.strip_prefix('#').unwrap_or(selector);
-        self.blocks().into_iter().find(|b| {
-            let b_clean = b.name.strip_prefix('#').unwrap_or(b.name);
-            if b.name == selector || b_clean == clean {
-                return true;
-            }
-            if let Some(parent) = b.parent {
-                let p_clean = parent.strip_prefix('#').unwrap_or(parent);
-                if clean.starts_with(p_clean)
-                    && clean[p_clean.len()..].starts_with('.')
-                    && &clean[p_clean.len() + 1..] == b_clean
-                {
-                    return true;
-                }
-            }
-            false
-        })
+        self.block(selector).map(|b| b.to_view())
+    }
+
+    /// Finds a block by selector like [`Template::find_block`], as a [`Block`] handle that
+    /// reads straight from the bytecode: no allocation, and `parent`, `children` and
+    /// `next_sibling` are O(1).
+    pub fn block(&self, selector: &str) -> Option<Block<'_>> {
+        let rec = self.path_index().find_block(&self.data, &self.fields, selector)?;
+        Some(Block::new(&self.data, &self.fields, rec))
+    }
+
+    /// Follows a path of block names (`"window.title"`) from the top level of the
+    /// document using only the tree links written while parsing: no index is built, and
+    /// the cost is the number of sibling blocks compared at each level. A name that
+    /// contains a `.` itself is not addressable this way; use [`Template::block`].
+    pub fn block_path(&self, path: &str) -> Option<Block<'_>> {
+        let mut segments = path.strip_prefix('#').unwrap_or(path).split('.');
+        let first = segments.next()?;
+        let root = self.root_blocks().find(|b| b.name() == first)?;
+        segments.try_fold(root, |block, name| block.child(name))
+    }
+
+    /// The blocks written at the top level of the document, in order.
+    pub fn root_blocks(&self) -> RootBlocks<'_> {
+        RootBlocks { data: &self.data, fields: &self.fields, idx: 0 }
+    }
+
+    fn path_index(&self) -> &index::PathIndex {
+        self.index.get_or_init(|| index::PathIndex::build(&self.data, &self.fields))
     }
 
     /// Internal helper to resolve a dot-path into a [BlockView] and property key.
@@ -458,7 +482,14 @@ impl Template {
     }
 
     /// Queries a field across scoped blocks using dot-notation (e.g. `"palette.bg_window"` or `"title"`).
+    ///
+    /// Paths the [path index](Template::locate_property) resolves cost O(depth); only
+    /// selectors it cannot address (a block whose own name contains `.`) scan the document.
     pub fn query_field(&self, path: &str) -> Option<ParsedField<'_>> {
+        if let Some(rec) = self.locate_record(path) {
+            let len = parser::record_len(self.fields[rec]);
+            return FieldIter::new(&self.data, &self.fields[rec..rec + len]).next();
+        }
         if let Some((b, key)) = self.resolve_block_and_key(path) {
             b.get(key).cloned()
         } else {
@@ -480,10 +511,21 @@ impl Template {
     /// (`"audio.volume"`, `"car.dimensions.width"`) matches the property inside that
     /// exact block nesting.
     pub(crate) fn locate_property(&self, path: &str) -> Option<usize> {
+        self.locate_record(path).filter(|&rec| self.fields[rec] == parser::TAG_COMMON_TEXT)
+    }
+
+    /// Like [`Template::locate_property`] but for any property, list or enum record.
+    pub(crate) fn locate_record(&self, path: &str) -> Option<usize> {
         let clean_path = path.strip_prefix('#').unwrap_or(path);
-        self.index
-            .get_or_init(|| index::PathIndex::build(&self.data, &self.fields))
-            .get(&self.data, &self.fields, clean_path)
+        self.path_index().get(&self.data, &self.fields, clean_path)
+    }
+
+    /// Looks `path` up in the index and returns the body of a record of kind `tag`:
+    /// `Some(Some(body))` on a hit, `Some(None)` if the key is something else, `None` if
+    /// the index does not know the path.
+    fn indexed_body(&self, path: &str, tag: u8) -> Option<Option<&str>> {
+        let rec = self.locate_record(path)?;
+        Some((self.fields[rec] == tag).then(|| parser::resolve_slice(&self.data, &self.fields, rec + 9)))
     }
 
     /// Linear-scan equivalent of [`Template::locate_property`], kept as the reference
@@ -508,7 +550,7 @@ impl Template {
                     }
                     parser::TAG_BLOCK_START => {
                         depth += 1;
-                        idx += parser::REC_NAMED;
+                        idx += parser::REC_BLOCK_START;
                     }
                     parser::TAG_BLOCK_END => {
                         depth = depth.saturating_sub(1);
@@ -545,7 +587,7 @@ impl Template {
                 parser::TAG_BLOCK_START => {
                     let name = parser::resolve_slice(&self.data, &self.fields, idx + 1);
                     let name_clean = name.strip_prefix('#').unwrap_or(name);
-                    idx += parser::REC_NAMED;
+                    idx += parser::REC_BLOCK_START;
                     if stack_depth < block_path.len() && stack_depth == matched_depth && name_clean == block_path[stack_depth] {
                         matched_depth += 1;
                     }
@@ -703,50 +745,92 @@ impl Template {
     }
 
     /// Queries all items from a list field using dot-notation or top-level key (e.g. `"inventory.items"`).
+    ///
+    /// Allocates the returned `Vec`; use [`Template::query_list_iter`] to avoid it.
     pub fn query_list(&self, path: &str) -> Option<Vec<&str>> {
-        if let Some((b, key)) = self.resolve_block_and_key(path) {
-            b.get_list(key)
-        } else {
-            self.get(path).and_then(|f| match f {
-                ParsedField::List { .. } => Some(f.list_items()),
-                _ => None,
-            })
+        self.query_list_iter(path).map(Iterator::collect)
+    }
+
+    /// Iterates the items of a list field without allocating.
+    ///
+    /// Resolved through the path index in O(depth), the items borrow from the document.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rost::Template;
+    ///
+    /// let doc = Template::parse("#inventory { items [sword, \"magic shield\", potion] }").unwrap();
+    /// let items: Vec<&str> = doc.query_list_iter("inventory.items").unwrap().collect();
+    /// assert_eq!(items, ["sword", "magic shield", "potion"]);
+    /// assert_eq!(doc.query_list_iter("inventory.items").unwrap().count(), 3);
+    /// assert!(doc.query_list_iter("inventory.missing").is_none());
+    /// ```
+    pub fn query_list_iter(&self, path: &str) -> Option<Items<'_>> {
+        match self.indexed_body(path, parser::TAG_LIST) {
+            Some(body) => body.map(Items::list),
+            None => {
+                let items = if let Some((b, key)) = self.resolve_block_and_key(path) {
+                    b.get_list(key)
+                } else {
+                    self.get(path).and_then(|f| match f {
+                        ParsedField::List { .. } => Some(f.list_items()),
+                        _ => None,
+                    })
+                };
+                items.map(Items::owned)
+            }
         }
     }
 
     /// Queries a specific element by index from a list field (e.g. `query_list_item("inventory.items", 0)`).
     pub fn query_list_item(&self, path: &str, index: usize) -> Option<&str> {
-        if let Some((b, key)) = self.resolve_block_and_key(path) {
-            b.get_list_item(key, index)
-        } else {
-            self.get(path).and_then(|f| f.list_item(index))
-        }
+        self.query_list_iter(path)?.nth(index)
     }
 
     /// Queries all variants from an enum field using dot-notation or top-level key (e.g. `"profile.status"`).
+    ///
+    /// Allocates the returned `Vec`; use [`Template::query_enum_iter`] to avoid it.
     pub fn query_enum(&self, path: &str) -> Option<Vec<&str>> {
-        if let Some((b, key)) = self.resolve_block_and_key(path) {
-            b.get_enum(key)
-        } else {
-            self.get(path).and_then(|f| match f {
-                ParsedField::Enum { .. } => Some(f.enum_variants()),
-                _ => None,
-            })
+        self.query_enum_iter(path).map(Iterator::collect)
+    }
+
+    /// Iterates the variants of an enum field without allocating.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rost::Template;
+    ///
+    /// let doc = Template::parse("#profile { status | active, away, offline | }").unwrap();
+    /// let variants: Vec<&str> = doc.query_enum_iter("profile.status").unwrap().collect();
+    /// assert_eq!(variants, ["active", "away", "offline"]);
+    /// ```
+    pub fn query_enum_iter(&self, path: &str) -> Option<Items<'_>> {
+        match self.indexed_body(path, parser::TAG_ENUM) {
+            Some(body) => body.map(Items::variants),
+            None => {
+                let variants = if let Some((b, key)) = self.resolve_block_and_key(path) {
+                    b.get_enum(key)
+                } else {
+                    self.get(path).and_then(|f| match f {
+                        ParsedField::Enum { .. } => Some(f.enum_variants()),
+                        _ => None,
+                    })
+                };
+                variants.map(Items::owned)
+            }
         }
     }
 
     /// Queries a specific variant by index from an enum field (e.g. `query_enum_variant("profile.status", 0)`).
     pub fn query_enum_variant(&self, path: &str, index: usize) -> Option<&str> {
-        if let Some((b, key)) = self.resolve_block_and_key(path) {
-            b.get_enum_variant(key, index)
-        } else {
-            self.get(path).and_then(|f| f.enum_variant(index))
-        }
+        self.query_enum_iter(path)?.nth(index)
     }
 
     /// Saves the current template buffer back to disk.
     pub fn save<P: AsRef<Path>>(&self, path: P) -> std::io::Result<()> {
-        fs::write(path, &self.data)
+        fs::write(path, &*self.data)
     }
 }
 

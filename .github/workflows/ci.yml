@@ -15,7 +15,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        features: ["", "--features serde"]
+        features: ["", "--features serde", "--all-features"]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -37,6 +37,8 @@ jobs:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      # Base and head are built and timed in the same job, in alternating rounds, so
-      # both see the same machine. Fails if any workload is more than 10% slower.
-      - run: ROUNDS=7 scripts/perf-gate.sh "origin/${{ github.base_ref }}" 10
+      - run: sudo apt-get update && sudo apt-get install -y valgrind
+      # Base and head are built in the same job and measured in executed instructions
+      # (valgrind), which do not vary with the machine. Fails if any workload executes
+      # more than 3% more instructions than the base.
+      - run: scripts/perf-gate.sh "origin/${{ github.base_ref }}" 3

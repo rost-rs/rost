@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 use rost::Template;
 
 #[derive(serde::Deserialize, serde::Serialize)]
+#[cfg_attr(feature = "derive", derive(rost::Rost))]
 #[allow(dead_code)]
 struct Item {
     id: u32,
@@ -58,6 +59,13 @@ fn rost_doc(n: usize) -> String {
                 "#item_{i} {{\n    id: {i}\n    name: \"item {i}\"\n    price: {i}.5\n    active: true\n    color: #1e1e2e\n}}\n"
             )
         })
+        .collect()
+}
+
+/// The same records, one per line without indentation: how a rost file looks when written compactly.
+fn rost_compact_doc(n: usize) -> String {
+    (0..n)
+        .map(|i| format!("#item_{i} {{ id: {i}, name: \"item {i}\", price: {i}.5, active: true, color: #1e1e2e }}\n"))
         .collect()
 }
 
@@ -147,6 +155,22 @@ fn main() {
         black_box(rost::from_template::<HashMap<String, Item>>(&t).unwrap());
     });
     row(big, "rost (Template + from_template)", throughput(rost_src.len(), d));
+    let rost_compact = rost_compact_doc(n);
+    let d = median(9, || {
+        black_box(rost::from_str::<HashMap<String, Item>>(black_box(&rost_compact)).unwrap());
+    });
+    row(big, "**rost::from_str** (compact layout)", throughput(rost_compact.len(), d));
+    #[cfg(feature = "derive")]
+    {
+        let d = median(9, || {
+            black_box(rost::load::<HashMap<String, Item>>(black_box(&rost_src)).unwrap());
+        });
+        row(big, "**rost::load** (`#[derive(Rost)]`)", throughput(rost_src.len(), d));
+        let d = median(9, || {
+            black_box(rost::load::<HashMap<String, Item>>(black_box(&rost_compact)).unwrap());
+        });
+        row(big, "**rost::load** (`#[derive(Rost)]`, compact layout)", throughput(rost_compact.len(), d));
+    }
     let d = median(9, || {
         black_box(serde_json::from_str::<HashMap<String, Item>>(black_box(&json_src)).unwrap());
     });
@@ -238,6 +262,14 @@ fn main() {
     });
     row(tree, "**rost::json::from_str** (strict JSON)", throughput(json_src.len(), d));
     let d = median(9, || {
+        black_box(rost::doc::Doc::from_json(black_box(&json_src)).unwrap());
+    });
+    row(tree, "**rost::doc::Doc::from_json** (borrowed tape)", throughput(json_src.len(), d));
+    let d = median(9, || {
+        black_box(rost::doc::Doc::from_rost(black_box(&rost_src)).unwrap());
+    });
+    row(tree, "**rost::doc::Doc::from_rost** (borrowed tape)", throughput(rost_src.len(), d));
+    let d = median(9, || {
         black_box(sonic_rs::from_str::<sonic_rs::Value>(black_box(&json_src)).unwrap());
     });
     row(tree, "sonic_rs::Value", throughput(json_src.len(), d));
@@ -304,6 +336,22 @@ fn main() {
         black_box(Template::parse(black_box(&rost_src)).unwrap());
     });
     row(scan, "rost strict parse (validated)", throughput(rost_src.len(), d));
+    let precompiled = Template::parse_lenient(&rost_src).to_rostc();
+    let d = median(15, || {
+        black_box(Template::from_rostc(black_box(&precompiled)).unwrap());
+    });
+    row(scan, "rost load .rostc (checksum + validation)", throughput(rost_src.len(), d));
+    #[cfg(feature = "mmap")]
+    {
+        let path = std::env::temp_dir().join(format!("rost-bench-{}.rostc", std::process::id()));
+        std::fs::write(&path, &precompiled).unwrap();
+        let d = median(15, || {
+            // SAFETY: the benchmark owns the file and leaves it alone while it is mapped.
+            black_box(unsafe { Template::mmap_rostc(black_box(&path)) }.unwrap());
+        });
+        row(scan, "rost mmap .rostc (checksum + validation, no copy)", throughput(rost_src.len(), d));
+        std::fs::remove_file(&path).ok();
+    }
     let d = median(15, || {
         black_box(serde_json::from_str::<serde::de::IgnoredAny>(black_box(&json_src)).unwrap());
     });
