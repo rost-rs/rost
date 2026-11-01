@@ -29,3 +29,8 @@ required-features = ["serde"]
 [profile.bench]
 codegen-units = 1
 lto = "fat"
+
+[[bench]]
+name = "corpus"
+harness = false
+required-features = ["serde"]
