@@ -1,6 +1,6 @@
 [package]
 name = "rost"
-version = "0.1.0"
+version = "0.2.0-alpha.1"
 edition = "2024"
 authors = ["The Rost Project Contributors"]
 description = "Blazing-fast zero-copy document parser, indexer, and malleable engine for the .rost format"
@@ -9,3 +9,33 @@ repository = "https://github.com/rost-rs/rost"
 
 [dependencies]
 memchr = "2.8.3"
+serde = { version = "1.0.229", features = ["derive"], optional = true }
+
+[features]
+serde = ["dep:serde"]
+
+[dev-dependencies]
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1"
+simd-json = "0.19.0"
+sonic-rs = "0.5.10"
+toml = "0.9"
+
+[[bench]]
+name = "compare"
+harness = false
+required-features = ["serde"]
+
+[profile.bench]
+codegen-units = 1
+lto = "fat"
+
+[[bench]]
+name = "corpus"
+harness = false
+required-features = ["serde"]
+
+[[bench]]
+name = "gate"
+harness = false
+required-features = ["serde"]

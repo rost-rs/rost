@@ -5,7 +5,7 @@
 //! property tweaks during 60/144 FPS game loops or UI theme hot-reloads)
 //! with minimal or zero reallocations.
 
-use super::parser::parse_into_bytecode;
+use super::parser::{parse_into_bytecode, read_u32};
 use super::Template;
 use std::fmt::Write;
 
@@ -141,11 +141,57 @@ impl RostBuilder {
     }
 }
 
+/// Encodes `value` so that writing it into a property slot cannot change the document
+/// structure.
+///
+/// Inside an existing quoted slot only `\\` and `"` are escaped. In a bare slot the value is
+/// written as-is when it is a single safe token sequence, and wrapped in quotes otherwise
+/// (newlines, delimiters, unbalanced brackets, surrounding whitespace or empty values).
+fn encode_value(value: &str, inside_quotes: bool) -> std::borrow::Cow<'_, str> {
+    use std::borrow::Cow;
+
+    let escape = |v: &str| v.replace('\\', "\\\\").replace('"', "\\\"");
+    if inside_quotes {
+        return if value.contains(['\\', '"']) { Cow::Owned(escape(value)) } else { Cow::Borrowed(value) };
+    }
+    if is_bare_safe(value) {
+        Cow::Borrowed(value)
+    } else {
+        Cow::Owned(format!("\"{}\"", escape(value)))
+    }
+}
+
+/// Returns `true` if `value` round-trips as an unquoted property value.
+fn is_bare_safe(value: &str) -> bool {
+    if value.is_empty() || value.trim() != value {
+        return false;
+    }
+    let mut depth: i32 = 0;
+    for b in value.bytes() {
+        match b {
+            b'\n' | b'\r' | b';' | b'{' | b'}' | b'"' | b'|' => return false,
+            b',' if depth == 0 => return false,
+            b'(' | b'[' => depth += 1,
+            b')' | b']' => {
+                depth -= 1;
+                if depth < 0 {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+    }
+    depth == 0
+}
+
 /// Mutates and patches a `.rost` document buffer.
 pub struct MalleablePatcher;
 
 impl MalleablePatcher {
     /// Patches a property value inside a [`Template`].
+    ///
+    /// `target_key` is a bare top-level key or a dot path into nested blocks
+    /// (`"audio.volume"`), resolved exactly like [`Template::query_raw_value`].
     ///
     /// # Performance Guarantee
     /// - If the new value has the **exact same byte length** as the existing value,
@@ -155,43 +201,33 @@ impl MalleablePatcher {
     ///
     /// Returns `true` if the key was found and updated, or `false` otherwise.
     pub fn patch_property(template: &mut Template, target_key: &str, new_value: &str) -> bool {
-        let (found_val_offset, found_val_len) = {
-            let mut found = None;
-            for field in template.iter() {
-                if let super::field::ParsedField::CommonText { name, value, .. } = field
-                    && name == target_key
-                {
-                    // Locate byte offset of `value` inside `template.data`
-                    let base_ptr = template.data.as_ptr() as usize;
-                    let val_ptr = value.as_ptr() as usize;
-                    if val_ptr >= base_ptr && val_ptr + value.len() <= base_ptr + template.data.len() {
-                        let off = val_ptr - base_ptr;
-                        found = Some((off, value.len()));
-                        break;
-                    }
-                }
-            }
-            match found {
-                Some(pair) => pair,
-                None => return false,
-            }
+        let Some(rec) = template.locate_property(target_key) else {
+            return false;
         };
+        let found_val_offset = read_u32(&template.fields, rec + 9) as usize;
+        let found_val_len = read_u32(&template.fields, rec + 13) as usize;
 
-        if found_val_len == new_value.len() {
+        let quoted = found_val_offset > 0
+            && template.data[found_val_offset - 1] == b'"'
+            && template.data.get(found_val_offset + found_val_len) == Some(&b'"');
+        let encoded = encode_value(new_value, quoted);
+
+        if found_val_len == encoded.len() {
             // Fast in-place zero-copy rewrite:
             template.data[found_val_offset..found_val_offset + found_val_len]
-                .copy_from_slice(new_value.as_bytes());
+                .copy_from_slice(encoded.as_bytes());
             true
         } else {
             // Re-slicing and re-indexing:
-            let mut new_data = Vec::with_capacity(template.data.len() + new_value.len());
+            let mut new_data = Vec::with_capacity(template.data.len() + encoded.len());
             new_data.extend_from_slice(&template.data[..found_val_offset]);
-            new_data.extend_from_slice(new_value.as_bytes());
+            new_data.extend_from_slice(encoded.as_bytes());
             new_data.extend_from_slice(&template.data[found_val_offset + found_val_len..]);
 
             let new_fields = parse_into_bytecode(&new_data);
             template.data = new_data;
             template.fields = new_fields;
+            template.index = Default::default();
             true
         }
     }
