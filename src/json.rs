@@ -53,7 +53,7 @@ pub fn validate(src: &str) -> Result<(), ParseError> {
 /// Parses `src` as strict JSON into a [`Value`](crate::Value).
 ///
 /// Objects keep their key order; a repeated key keeps its last value. Integers that fit
-/// an `i64` become [`Value::Int`](crate::Value::Int), every other number a
+/// an `i64` become [`Value::Int`](crate::Value::Int), every other number (and `-0`) a
 /// [`Value::Float`](crate::Value::Float).
 ///
 /// # Examples
@@ -170,7 +170,11 @@ impl Sink for Build {
         crate::Value::Bool(b)
     }
     fn number(&mut self, text: &str, integer: bool) -> Option<crate::Value> {
-        if integer && let Ok(i) = text.parse::<i64>() {
+        // `-0` has no i64 form; as a float it keeps its sign, like the rost readers.
+        if integer
+            && let Ok(i) = text.parse::<i64>()
+            && (i != 0 || !text.starts_with('-'))
+        {
             return Some(crate::Value::Int(i));
         }
         finite(text).map(crate::Value::Float)
@@ -638,6 +642,9 @@ mod tests {
         assert_eq!(from_str(&compact).unwrap(), v);
         assert_eq!(from_str(&to_string_pretty(&v)).unwrap(), v);
         assert_eq!(to_string(&Value::Float(f64::NAN)), "null");
+        let zero = from_str("-0").unwrap().as_f64().unwrap();
+        assert!(zero == 0.0 && zero.is_sign_negative());
+        assert_eq!(to_string(&Value::Float(zero)), "-0.0");
         assert_eq!(
             to_string_pretty(&from_str(r#"{"a":[1,{}],"b":[]}"#).unwrap()),
             "{\n  \"a\": [\n    1,\n    {}\n  ],\n  \"b\": []\n}"
