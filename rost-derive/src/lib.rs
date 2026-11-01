@@ -115,9 +115,9 @@ fn expand(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
         let ty = &f.ty;
         let key = &f.key;
         let read = if f.serde {
-            quote!(__f.value::<#ty>()?)
+            quote!(__f.value::<#ty>().map_err(|__e| __f.locate(__e))?)
         } else {
-            quote!(<#ty as ::rost::Load<'de>>::load(__f)?)
+            quote!(<#ty as ::rost::Load<'de>>::load(__f).map_err(|__e| __f.locate(__e))?)
         };
         quote! {
             #i => {

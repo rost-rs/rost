@@ -98,9 +98,15 @@ impl<'a, 'de> Fast<'a, 'de> {
     #[inline(always)]
     pub fn field(&mut self, names: &[&str], hint: usize) -> Result<Field, DeError> {
         match self.0.next_entry() {
-            Ok(Some(key)) => Ok(match_key(names, hint, key)),
+            Ok(Some(key)) => {
+                self.0.key = key;
+                Ok(match_key(names, hint, key))
+            }
             Ok(None) => Ok(Field::End),
-            Err(Detour::EscapedKey(key)) => Ok(match_key(names, hint, &unescape(key))),
+            Err(Detour::EscapedKey(key)) => {
+                self.0.key = key;
+                Ok(match_key(names, hint, &unescape(key)))
+            }
             Err(Detour::Error(e)) => Err(e),
         }
     }
@@ -113,6 +119,31 @@ impl<'a, 'de> Fast<'a, 'de> {
             Err(Detour::EscapedKey(key)) => Ok(Some(unescape(key))),
             Err(Detour::Error(e)) => Err(e),
         }
+    }
+
+    /// Prefixes `err` with the `line:column` of the entry just read, unless it already
+    /// carries a position (an error from a nested block does).
+    #[cold]
+    pub fn locate(&self, err: DeError) -> DeError {
+        let p = &*self.0.p;
+        let msg = err.message();
+        let mut parts = msg.splitn(3, ':');
+        let positioned = matches!(
+            (parts.next(), parts.next(), parts.next()),
+            (Some(l), Some(c), Some(_)) if l.parse::<u32>().is_ok() && c.trim().parse::<u32>().is_ok()
+        );
+        if positioned || !p.locate {
+            return err;
+        }
+        let base = p.src.as_ptr() as usize;
+        let key = self.0.key.as_ptr() as usize;
+        let at = if key >= base && key <= base + p.src.len() { key - base } else { p.pos };
+        let at = at.min(p.bytes.len());
+        let before = &p.bytes[..at];
+        let line = memchr::Memchr::new(b'\n', before).count() + 1;
+        let line_start = memchr::memrchr(b'\n', before).map_or(0, |i| i + 1);
+        let column = p.src[line_start..at].chars().count() + 1;
+        DeError::new(format!("{line}:{column}: {msg}"))
     }
 
     /// Skips the value of the entry just read, validating it.
