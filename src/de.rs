@@ -84,6 +84,16 @@ fn trim_bare(value: &str) -> &str {
     }
 }
 
+/// A float for untyped targets: only text that is entirely a number, so `140px` and
+/// `inf` stay strings. Typed `f64` targets still accept units through `parse_fast_f64`.
+fn parse_untyped_float(s: &str) -> Option<f64> {
+    let digits = s.strip_prefix(['-', '+']).unwrap_or(s);
+    if !digits.starts_with(|c: char| c.is_ascii_digit() || c == '.') {
+        return None;
+    }
+    s.parse().ok()
+}
+
 pub(crate) struct FieldDeserializer<'a> {
     pub(crate) name: &'a str,
     pub(crate) value: &'a str,
@@ -132,7 +142,7 @@ impl<'de> Deserializer<'de> for FieldDeserializer<'de> {
         {
             return visitor.visit_u32(u);
         }
-        if let Some(f) = parse_fast_f64(s) {
+        if let Some(f) = parse_untyped_float(s) {
             return visitor.visit_f64(f);
         }
         if s == "true" {

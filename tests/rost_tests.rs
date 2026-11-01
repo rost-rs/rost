@@ -1288,3 +1288,21 @@ fn test_from_reader_reads_streams() {
     let invalid = rost::from_reader::<_, HashMap<String, u32>>(std::io::Cursor::new(b"a: \xff\n".to_vec()));
     assert!(invalid.unwrap_err().to_string().starts_with("I/O error"));
 }
+
+#[cfg(feature = "serde")]
+#[test]
+fn test_untyped_values_keep_units() {
+    use serde_json::{json, Value};
+
+    let src = "size: 140px\nratio: 50%\nn: -1.5e3\nw: .5\nword: inf\nneg: -inf\n";
+    let expected = json!({"size": "140px", "ratio": "50%", "n": -1500.0, "w": 0.5, "word": "inf", "neg": "-inf"});
+    assert_eq!(rost::from_str::<Value>(src).unwrap(), expected);
+    assert_eq!(rost::from_template::<Value>(&Template::parse(src).unwrap()).unwrap(), expected);
+
+    // Typed targets still read the number out of a dimension.
+    #[derive(serde::Deserialize)]
+    struct Typed {
+        size: f64,
+    }
+    assert_eq!(rost::from_str::<Typed>("size: 140px\n").unwrap().size, 140.0);
+}
