@@ -102,6 +102,8 @@ pub mod validate;
 #[cfg(feature = "serde")]
 pub mod types;
 #[cfg(feature = "serde")]
+pub mod overrides;
+#[cfg(feature = "serde")]
 pub mod diff;
 #[cfg(feature = "watch")]
 pub mod reload;
@@ -141,6 +143,8 @@ pub use rost_derive::Rost;
 #[cfg(feature = "serde")]
 pub use text::{from_reader, from_slice, from_str, load, load_file, Fast, Field, Load, Mark};
 pub use describe::{Describe, FieldDesc, TypeDesc};
+#[cfg(feature = "serde")]
+pub use overrides::{load_file_with, load_with, Overrides};
 #[cfg(feature = "derive")]
 pub use rost_derive::Describe;
 #[cfg(feature = "serde")]

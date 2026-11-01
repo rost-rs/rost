@@ -346,3 +346,58 @@ fn serde_entry_point_works_too() {
     assert!(r.wait_for_version(2, WAIT));
     assert_eq!(r.get().width, 8);
 }
+
+#[derive(Rost, Debug, PartialEq)]
+struct Checked {
+    #[rost(range(min = 1, max = 10))]
+    level: u32,
+}
+
+#[test]
+fn a_value_outside_its_range_is_a_rejected_edit() {
+    let d = Dir::new("range");
+    let p = d.file("a.rost", "level: 3\n");
+    let r = Reloader::<Checked>::watch_load(&p).unwrap();
+    write(&p, "level: 99\n");
+    assert!(r.wait_for_errors(1, WAIT));
+    assert_eq!(r.get().level, 3, "the running value is untouched");
+    let err = r.last_error().unwrap();
+    assert_eq!(err.line, Some(1));
+    assert!(err.message.contains("field `level`: 99 is out of range: expected 1 to 10"), "{err}");
+    write(&p, "level: 7\n");
+    assert!(r.wait_for_version(2, WAIT));
+    assert_eq!(r.get().level, 7);
+}
+
+#[test]
+fn a_cross_field_check_rejects_an_edit_like_any_other_error() {
+    #[derive(Rost, Debug)]
+    struct Pair {
+        low: u32,
+        high: u32,
+    }
+    let d = Dir::new("validate");
+    let p = d.file("a.rost", "low: 1\nhigh: 5\n");
+    let r = Reloader::<Pair>::builder(&p, |t| rost::load(t).map_err(rost::ReloadError::from_display))
+        .validate(|v| if v.low <= v.high { Ok(()) } else { Err(format!("low ({}) is above high ({})", v.low, v.high)) })
+        .build()
+        .unwrap();
+    write(&p, "low: 9\nhigh: 5\n");
+    assert!(r.wait_for_errors(1, WAIT));
+    assert_eq!(r.get().low, 1);
+    assert!(r.last_error().unwrap().message.contains("low (9) is above high (5)"));
+    write(&p, "low: 2\nhigh: 5\n");
+    assert!(r.wait_for_version(2, WAIT));
+    assert_eq!(r.get().low, 2);
+}
+
+#[test]
+fn overrides_survive_reloads() {
+    let d = Dir::new("overrides");
+    let p = d.file("a.rost", "level: 3\n");
+    let r = Reloader::<Checked>::watch_load_with(&p, rost::Overrides::new().set("level", "8")).unwrap();
+    assert_eq!(r.get().level, 8);
+    write(&p, "level: 2\nextra: 1\n");
+    r.reload_now();
+    assert_eq!(r.get().level, 8, "the override still wins after the file changed");
+}
