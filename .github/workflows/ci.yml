@@ -27,6 +27,18 @@ jobs:
       - run: cargo test ${{ matrix.features }}
       - run: cargo clippy --all-targets ${{ matrix.features }} -- -D warnings
 
+  demo:
+    name: demo app
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Generates the demo project against this checkout, then drives its terminal UI:
+      # live edit, rejected edit, `t` patching app.rost, clean exit.
+      - run: scripts/rost-init.sh "$RUNNER_TEMP/demo"
+      - run: python3 scripts/demo-test.py "$RUNNER_TEMP/demo"
+
   perf:
     name: perf gate
     if: github.event_name == 'pull_request'

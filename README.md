@@ -31,6 +31,26 @@ The **`.rost`** declarative specification format bridges the gap between human-r
 
 ---
 
+## Try it in one minute
+
+```sh
+git clone https://github.com/rost-rs/rost.git && cd rost
+scripts/rost-init.sh my-demo --run
+```
+
+The script checks `cargo` (Rust 1.85 or newer) and `git`, declares its dependencies (`rost` with the
+`derive` and `watch` features, and `ratatui` for the terminal UI), writes a small project and builds it.
+The app shows three themes, each in its own `.rost` file, loaded into typed Rust values:
+
+- edit `themes/dark.rost` in another terminal and the colors change on screen, no restart;
+- break a file on purpose: the last good value stays and the error shows its line and column;
+- press `t` to switch theme: the app patches `app.rost` (comments and layout intact) and the hot
+  reload picks it up like any other edit; a theme name that does not exist is rejected;
+- `--set title=hello` or `DEMO_TITLE=hello` override `app.rost` without editing it.
+
+Outside a checkout the script uses the released tag from git; `ROST_PATH=/path/to/rost` forces a local copy.
+CI generates the demo and drives its terminal UI in a pseudo-terminal (`scripts/demo-test.py`).
+
 ## Quick Start
 
 Add `rost` to your `Cargo.toml`:
