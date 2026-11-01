@@ -97,6 +97,8 @@ pub mod query;
 pub mod rostc;
 pub mod schema;
 pub mod watcher;
+#[cfg(feature = "serde")]
+pub mod diff;
 pub mod object;
 
 #[cfg(feature = "serde")]
