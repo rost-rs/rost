@@ -122,7 +122,7 @@ pub(crate) struct FieldDeserializer<'a> {
 impl<'a> FieldDeserializer<'a> {
     /// The value as a string: escapes decoded for quoted values, verbatim for raw ones,
     /// trimmed for bare tokens.
-    fn text(&self) -> Cow<'a, str> {
+    pub(crate) fn text(&self) -> Cow<'a, str> {
         match self.quote {
             QuoteStyle::Quoted => unescape(self.value),
             QuoteStyle::Raw => Cow::Borrowed(self.value),

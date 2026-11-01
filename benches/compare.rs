@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 use rost::Template;
 
 #[derive(serde::Deserialize, serde::Serialize)]
+#[cfg_attr(feature = "derive", derive(rost::Rost))]
 #[allow(dead_code)]
 struct Item {
     id: u32,
@@ -58,6 +59,13 @@ fn rost_doc(n: usize) -> String {
                 "#item_{i} {{\n    id: {i}\n    name: \"item {i}\"\n    price: {i}.5\n    active: true\n    color: #1e1e2e\n}}\n"
             )
         })
+        .collect()
+}
+
+/// The same records, one per line without indentation: how a rost file looks when written compactly.
+fn rost_compact_doc(n: usize) -> String {
+    (0..n)
+        .map(|i| format!("#item_{i} {{ id: {i}, name: \"item {i}\", price: {i}.5, active: true, color: #1e1e2e }}\n"))
         .collect()
 }
 
@@ -147,6 +155,22 @@ fn main() {
         black_box(rost::from_template::<HashMap<String, Item>>(&t).unwrap());
     });
     row(big, "rost (Template + from_template)", throughput(rost_src.len(), d));
+    let rost_compact = rost_compact_doc(n);
+    let d = median(9, || {
+        black_box(rost::from_str::<HashMap<String, Item>>(black_box(&rost_compact)).unwrap());
+    });
+    row(big, "**rost::from_str** (compact layout)", throughput(rost_compact.len(), d));
+    #[cfg(feature = "derive")]
+    {
+        let d = median(9, || {
+            black_box(rost::load::<HashMap<String, Item>>(black_box(&rost_src)).unwrap());
+        });
+        row(big, "**rost::load** (`#[derive(Rost)]`)", throughput(rost_src.len(), d));
+        let d = median(9, || {
+            black_box(rost::load::<HashMap<String, Item>>(black_box(&rost_compact)).unwrap());
+        });
+        row(big, "**rost::load** (`#[derive(Rost)]`, compact layout)", throughput(rost_compact.len(), d));
+    }
     let d = median(9, || {
         black_box(serde_json::from_str::<HashMap<String, Item>>(black_box(&json_src)).unwrap());
     });

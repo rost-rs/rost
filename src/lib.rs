@@ -126,8 +126,10 @@ pub use de::DeError as Error;
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 #[cfg(feature = "serde")]
 pub use ser::{to_string, to_string_pretty, to_vec, to_vec_pretty, to_writer, to_writer_pretty};
+#[cfg(feature = "derive")]
+pub use rost_derive::Rost;
 #[cfg(feature = "serde")]
-pub use text::{from_reader, from_slice, from_str};
+pub use text::{from_reader, from_slice, from_str, load, Fast, Field, Load};
 #[cfg(feature = "serde")]
 pub use value::{from_value, Map, Value};
 

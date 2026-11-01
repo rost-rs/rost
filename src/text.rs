@@ -119,6 +119,9 @@ pub fn from_reader<R: std::io::Read, T: de::DeserializeOwned>(mut reader: R) -> 
     from_str(&src)
 }
 
+mod fast;
+pub use fast::{load, Fast, Field, Load};
+
 /// Byte classes skipped between entries: whitespace, separators.
 const TRIVIA: [bool; 256] = {
     let mut table = [false; 256];
