@@ -304,6 +304,11 @@ fn main() {
         black_box(Template::parse(black_box(&rost_src)).unwrap());
     });
     row(scan, "rost strict parse (validated)", throughput(rost_src.len(), d));
+    let precompiled = Template::parse_lenient(&rost_src).to_rostc();
+    let d = median(15, || {
+        black_box(Template::from_rostc(black_box(&precompiled)).unwrap());
+    });
+    row(scan, "rost load .rostc (checksum + validation)", throughput(rost_src.len(), d));
     let d = median(15, || {
         black_box(serde_json::from_str::<serde::de::IgnoredAny>(black_box(&json_src)).unwrap());
     });
