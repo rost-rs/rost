@@ -310,3 +310,122 @@ fn serde_attributes_work_on_both_paths() {
 fn round_trip_owned<T: Serialize + for<'de> Deserialize<'de> + PartialEq + std::fmt::Debug>(value: &T) {
     round_trip(value);
 }
+
+/// xorshift64*: deterministic generator, so a failing case is reproducible from its seed.
+struct Rng(u64);
+
+impl Rng {
+    fn next(&mut self) -> u64 {
+        self.0 ^= self.0 >> 12;
+        self.0 ^= self.0 << 25;
+        self.0 ^= self.0 >> 27;
+        self.0.wrapping_mul(0x2545_F491_4F6C_DD1D)
+    }
+
+    fn below(&mut self, n: usize) -> usize {
+        (self.next() % n as u64) as usize
+    }
+
+    fn string(&mut self) -> String {
+        const PIECES: &[&str] = &[
+            "a", "Z", "0", " ", "\"", "\\", "\n", "\t", "\r", "]", "[", "{", "}", ",", ";", ":", "=", "|", "#", "@",
+            "//", "\"\"\"", "é", "🦀", "\u{1}", "\u{7f}", "null", "true", "1.5", "-", "px",
+        ];
+        (0..self.below(6)).map(|_| PIECES[self.below(PIECES.len())]).collect()
+    }
+
+    fn key(&mut self) -> String {
+        const CHARS: &[u8] = b"abcXYZ019_-.$%!?'";
+        let len = 1 + self.below(6);
+        let mut key: String = (0..len).map(|_| CHARS[self.below(CHARS.len())] as char).collect();
+        if key.starts_with('/') {
+            key.insert(0, 'k');
+        }
+        key
+    }
+
+    fn float(&mut self) -> f64 {
+        match self.below(4) {
+            0 => f64::from_bits(self.next()),
+            1 => self.below(1000) as f64 / 8.0,
+            2 => -(self.next() as f64),
+            _ => [0.0, -0.0, f64::MIN_POSITIVE, f64::MAX, f64::EPSILON, 1e-300][self.below(6)],
+        }
+    }
+
+    fn value(&mut self, depth: usize) -> rost::Value {
+        use rost::Value;
+        let leaf = depth == 0 || self.below(3) > 0;
+        match self.below(if leaf { 5 } else { 7 }) {
+            0 => Value::Null,
+            1 => Value::Bool(self.below(2) == 1),
+            2 => Value::Int(match self.below(3) {
+                0 => self.next() as i64,
+                1 => self.below(100) as i64 - 50,
+                _ => [i64::MIN, i64::MAX, 0][self.below(3)],
+            }),
+            3 => {
+                let f = self.float();
+                Value::Float(if f.is_finite() { f } else { 0.25 })
+            }
+            4 => Value::String(self.string()),
+            5 => Value::List((0..self.below(5)).map(|_| self.value(depth - 1)).collect()),
+            _ => Value::Block(self.block(depth - 1)),
+        }
+    }
+
+    fn block(&mut self, depth: usize) -> rost::Map {
+        (0..self.below(6)).map(|_| (self.key(), self.value(depth))).collect()
+    }
+}
+
+#[test]
+fn generated_values_round_trip() {
+    let mut rng = Rng(0x5E71_A11E_E000_0001);
+    for case in 0..3_000 {
+        let value = rost::Value::Block(rng.block(4));
+        for text in [rost::to_string(&value).unwrap(), rost::to_string_pretty(&value).unwrap()] {
+            let back: rost::Value = rost::from_str(&text).unwrap_or_else(|e| panic!("case {case}: {e}\n{text}"));
+            assert_eq!(back, value, "case {case}: from_str of\n{text}");
+            let template = rost::Template::parse(&text).unwrap_or_else(|e| panic!("case {case}: {e:?}\n{text}"));
+            let back: rost::Value = rost::from_template(&template).unwrap_or_else(|e| panic!("case {case}: {e}\n{text}"));
+            assert_eq!(back, value, "case {case}: from_template of\n{text}");
+        }
+    }
+}
+
+#[test]
+fn generated_typed_documents_round_trip() {
+    let mut rng = Rng(0x7EED_0000_0000_0042);
+    for _ in 0..1_000 {
+        let mut doc = sample();
+        doc.title = rng.string();
+        doc.version = rng.next() as u32;
+        doc.ratio = rng.float() as f32;
+        if !doc.ratio.is_finite() {
+            doc.ratio = 1.5;
+        }
+        doc.offset = rng.next() as i64;
+        doc.letter = char::from_u32(rng.below(0x11_0000) as u32).unwrap_or('x');
+        doc.nothing = (rng.below(2) == 0).then(|| rng.string());
+        doc.items = (0..rng.below(4))
+            .map(|i| Item {
+                id: rng.next(),
+                name: rng.string(),
+                price: {
+                    let f = rng.float();
+                    if f.is_finite() { f } else { 2.0 }
+                },
+                tags: (0..rng.below(3)).map(|_| rng.string()).collect(),
+                shape: match i % 4 {
+                    0 => Shape::Empty,
+                    1 => Shape::Circle(rng.below(100) as f64),
+                    2 => Shape::Rect(rng.next() as u32, rng.next() as u32),
+                    _ => Shape::Poly { points: vec![(rng.next() as i32, -1)], closed: rng.below(2) == 0 },
+                },
+            })
+            .collect();
+        doc.env = (0..rng.below(4)).map(|_| (rng.key(), rng.string())).collect();
+        round_trip(&doc);
+    }
+}
