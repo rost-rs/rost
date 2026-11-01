@@ -264,35 +264,161 @@ impl Writer {
     fn string(&mut self, s: &str) {
         self.out.reserve(s.len() + 2);
         self.out.push('"');
+        let bytes = s.as_bytes();
         let mut start = 0;
-        for (i, b) in s.bytes().enumerate() {
-            let escape = match b {
-                b'"' => "\\\"",
-                b'\\' => "\\\\",
-                b'\n' => "\\n",
-                b'\r' => "\\r",
-                b'\t' => "\\t",
-                0..=0x1f | 0x7f => "",
-                _ => continue,
-            };
-            self.out.push_str(&s[start..i]);
-            if escape.is_empty() {
-                let _ = write!(self.out, "\\u{{{b:x}}}");
-            } else {
-                self.out.push_str(escape);
+        let mut i = 0;
+        while i < bytes.len() {
+            let b = bytes[i];
+            if !NEEDS_ESCAPE[b as usize] {
+                i += 1;
+                continue;
             }
-            start = i + 1;
+            self.out.push_str(&s[start..i]);
+            match b {
+                b'"' => self.out.push_str("\\\""),
+                b'\\' => self.out.push_str("\\\\"),
+                b'\n' => self.out.push_str("\\n"),
+                b'\r' => self.out.push_str("\\r"),
+                b'\t' => self.out.push_str("\\t"),
+                _ => {
+                    let _ = write!(self.out, "\\u{{{b:x}}}");
+                }
+            }
+            i += 1;
+            start = i;
         }
         self.out.push_str(&s[start..]);
         self.out.push('"');
     }
+
+    fn uint(&mut self, mut v: u64) {
+        let mut buf = [0u8; 20];
+        let mut i = buf.len();
+        while v >= 100 {
+            let d = (v % 100) as usize * 2;
+            v /= 100;
+            i -= 2;
+            buf[i..i + 2].copy_from_slice(&DIGIT_PAIRS[d..d + 2]);
+        }
+        if v >= 10 {
+            let d = v as usize * 2;
+            i -= 2;
+            buf[i..i + 2].copy_from_slice(&DIGIT_PAIRS[d..d + 2]);
+        } else {
+            i -= 1;
+            buf[i] = b'0' + v as u8;
+        }
+        // SAFETY: `buf[i..]` holds only ASCII digits.
+        self.out.push_str(unsafe { std::str::from_utf8_unchecked(&buf[i..]) });
+    }
+
+    fn int(&mut self, v: i64) {
+        if v < 0 {
+            self.out.push('-');
+        }
+        self.uint(v.unsigned_abs());
+    }
+
+    /// Writes a finite float as text that reads back to exactly `v`.
+    fn float(&mut self, v: f64) {
+        if !self.short_decimal(v) {
+            // `Debug` prints the shortest round-trip text and keeps a `.` or an exponent.
+            let _ = write!(self.out, "{v:?}");
+        }
+    }
+
+    /// Fast path for values that are short decimals, like `1234.5`: finds a `k` with
+    /// `v == m / 10^k` for an integer `m` below 2^53 and writes `m` with the point moved
+    /// `k` places. Reading that text rounds the same exact quotient that the
+    /// division here rounds, so it yields `v` again; with at most 15 significant digits
+    /// no shorter decimal maps to `v`, so the text is also the shortest one.
+    fn short_decimal(&mut self, v: f64) -> bool {
+        const LIMIT: f64 = 9_007_199_254_740_992.0; // 2^53
+        let a = v.abs();
+        if !(1e-6..1e15).contains(&a) {
+            return false;
+        }
+        for (k, &p) in POW10.iter().enumerate() {
+            let m = a * p;
+            if m >= LIMIT {
+                return false;
+            }
+            if m == m.trunc() && m / p == a {
+                // `a * p` may round off an integer at the smallest `k` and land on one at a
+                // larger `k`; trailing zeros denote the same decimal, so drop them.
+                let (mut m, mut k) = (m as u64, k);
+                while k > 0 && m % 10 == 0 {
+                    m /= 10;
+                    k -= 1;
+                }
+                if m >= 1_000_000_000_000_000 {
+                    return false; // more than 15 significant digits
+                }
+                if v.is_sign_negative() {
+                    self.out.push('-');
+                }
+                self.decimal(m, k);
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Writes `m / 10^k` in positional notation, always with a `.`.
+    fn decimal(&mut self, m: u64, k: usize) {
+        let start = self.out.len();
+        self.uint(m);
+        let digits = self.out.len() - start;
+        if k == 0 {
+            self.out.push_str(".0");
+        } else if digits > k {
+            self.out.insert(self.out.len() - k, '.');
+        } else {
+            let zeros = k - digits;
+            self.out.insert_str(start, "0.");
+            for _ in 0..zeros {
+                self.out.insert(start + 2, '0');
+            }
+        }
+    }
 }
+
+const POW10: [f64; 16] = [1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11, 1e12, 1e13, 1e14, 1e15];
+
+const DIGIT_PAIRS: &[u8; 200] = b"\
+    0001020304050607080910111213141516171819\
+    2021222324252627282930313233343536373839\
+    4041424344454647484950515253545556575859\
+    6061626364656667686970717273747576777879\
+    8081828384858687888990919293949596979899";
+
+/// Bytes a quoted string must escape: `"`, `\\` and control characters.
+const NEEDS_ESCAPE: [bool; 256] = {
+    let mut table = [false; 256];
+    let mut b = 0;
+    while b < 0x20 {
+        table[b] = true;
+        b += 1;
+    }
+    table[0x7f] = true;
+    table[b'"' as usize] = true;
+    table[b'\\' as usize] = true;
+    table
+};
+
+/// Bytes a key may not contain: separators, whitespace, `]` and `"`.
+const KEY_FORBIDDEN: [bool; 256] = {
+    let mut table = IS_DELIM_OR_WS;
+    table[b']' as usize] = true;
+    table[b'"' as usize] = true;
+    table
+};
 
 fn check_key(key: &str) -> Result<(), DeError> {
     let bytes = key.as_bytes();
     let valid = !bytes.is_empty()
         && !matches!(bytes[0], b'#' | b'@' | b'/')
-        && bytes.iter().all(|&b| !IS_DELIM_OR_WS[b as usize] && b != b']' && b != b'"');
+        && !bytes.iter().any(|&b| KEY_FORBIDDEN[b as usize]);
     if valid {
         Ok(())
     } else {
@@ -321,11 +447,20 @@ impl<'a> ValueSerializer<'a, '_> {
         Ok(())
     }
 
-    fn float(self, v: f64, text: std::fmt::Arguments<'_>) -> Result<(), DeError> {
-        if !v.is_finite() {
-            return Err(DeError(format!("cannot serialize the non-finite float {v}")));
-        }
-        self.bare(text)
+    fn non_finite(v: f64) -> DeError {
+        DeError(format!("cannot serialize the non-finite float {v}"))
+    }
+
+    fn int(self, v: i64) -> Result<(), DeError> {
+        self.w.scalar_prefix(self.ctx)?;
+        self.w.int(v);
+        Ok(())
+    }
+
+    fn uint(self, v: u64) -> Result<(), DeError> {
+        self.w.scalar_prefix(self.ctx)?;
+        self.w.uint(v);
+        Ok(())
     }
 
     /// Opens the single-entry block of a variant with data and writes its name.
@@ -350,23 +485,25 @@ impl<'a, 's> ser::Serializer for ValueSerializer<'a, 's> {
     type SerializeStructVariant = Compound<'a>;
 
     fn serialize_bool(self, v: bool) -> Result<(), DeError> {
-        self.bare(format_args!("{v}"))
+        self.w.scalar_prefix(self.ctx)?;
+        self.w.out.push_str(if v { "true" } else { "false" });
+        Ok(())
     }
 
     fn serialize_i8(self, v: i8) -> Result<(), DeError> {
-        self.bare(format_args!("{v}"))
+        self.int(v.into())
     }
 
     fn serialize_i16(self, v: i16) -> Result<(), DeError> {
-        self.bare(format_args!("{v}"))
+        self.int(v.into())
     }
 
     fn serialize_i32(self, v: i32) -> Result<(), DeError> {
-        self.bare(format_args!("{v}"))
+        self.int(v.into())
     }
 
     fn serialize_i64(self, v: i64) -> Result<(), DeError> {
-        self.bare(format_args!("{v}"))
+        self.int(v)
     }
 
     fn serialize_i128(self, v: i128) -> Result<(), DeError> {
@@ -374,19 +511,19 @@ impl<'a, 's> ser::Serializer for ValueSerializer<'a, 's> {
     }
 
     fn serialize_u8(self, v: u8) -> Result<(), DeError> {
-        self.bare(format_args!("{v}"))
+        self.uint(v.into())
     }
 
     fn serialize_u16(self, v: u16) -> Result<(), DeError> {
-        self.bare(format_args!("{v}"))
+        self.uint(v.into())
     }
 
     fn serialize_u32(self, v: u32) -> Result<(), DeError> {
-        self.bare(format_args!("{v}"))
+        self.uint(v.into())
     }
 
     fn serialize_u64(self, v: u64) -> Result<(), DeError> {
-        self.bare(format_args!("{v}"))
+        self.uint(v)
     }
 
     fn serialize_u128(self, v: u128) -> Result<(), DeError> {
@@ -396,11 +533,19 @@ impl<'a, 's> ser::Serializer for ValueSerializer<'a, 's> {
     // `Debug` prints the shortest text that reads back to the same float, and always
     // keeps a `.` or an exponent, so `1.0` stays a float.
     fn serialize_f32(self, v: f32) -> Result<(), DeError> {
-        self.float(f64::from(v), format_args!("{v:?}"))
+        if !v.is_finite() {
+            return Err(Self::non_finite(v.into()));
+        }
+        self.bare(format_args!("{v:?}"))
     }
 
     fn serialize_f64(self, v: f64) -> Result<(), DeError> {
-        self.float(v, format_args!("{v:?}"))
+        if !v.is_finite() {
+            return Err(Self::non_finite(v));
+        }
+        self.w.scalar_prefix(self.ctx)?;
+        self.w.float(v);
+        Ok(())
     }
 
     fn serialize_char(self, v: char) -> Result<(), DeError> {

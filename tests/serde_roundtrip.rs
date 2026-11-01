@@ -429,3 +429,41 @@ fn generated_typed_documents_round_trip() {
         round_trip(&doc);
     }
 }
+
+#[test]
+fn numbers_are_written_exactly() {
+    #[derive(Serialize, Deserialize, PartialEq, Debug)]
+    struct N {
+        f: f64,
+        i: i64,
+        u: u64,
+    }
+    let mut rng = Rng(0xF10A_7000_0000_0003);
+    let check = |f: f64, i: i64, u: u64| {
+        let text = rost::to_string(&N { f, i, u }).unwrap();
+        let back: N = rost::from_str(&text).unwrap_or_else(|e| panic!("{e}: {text}"));
+        assert_eq!(back.f.to_bits(), f.to_bits(), "{text}");
+        assert_eq!((back.i, back.u), (i, u), "{text}");
+        // The fast path writes the same digits as `Debug` whenever `Debug` is positional.
+        let debug = format!("{f:?}");
+        if !debug.contains('e') {
+            assert_eq!(text, format!("f: {debug}, i: {i}, u: {u}"));
+        }
+    };
+    for f in [0.0, -0.0, 0.5, -0.5, 1.0, 10.0, 0.1, 0.05, 1234.5, 1e-6, 0.000123, 123456789012345.0, 999999999999999.9] {
+        check(f, 0, 0);
+    }
+    check(1.5, i64::MIN, u64::MAX);
+    check(2.5, i64::MAX, 0);
+    for _ in 0..200_000 {
+        let f = match rng.below(4) {
+            0 => f64::from_bits(rng.next()),
+            1 => (rng.next() % 10_000_000) as f64 / [1.0, 10.0, 100.0, 1000.0, 1e6][rng.below(5)],
+            2 => rng.next() as f64 / (rng.next() | 1) as f64,
+            _ => -((rng.next() % 1_000_000_000_000_000) as f64) / 1e7,
+        };
+        if f.is_finite() {
+            check(f, rng.next() as i64, rng.next());
+        }
+    }
+}
