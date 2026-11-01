@@ -20,6 +20,30 @@ Development plan to turn `rost` into **the ultra-fast JSON and CSS for Rust**.
 - `cargo test --all-features` and `cargo clippy --all-features` must pass on every commit.
 - The detailed backlog is in [`TODO.md`](TODO.md) under `UPGRADES`.
 
+## Release checkpoints
+
+Pre-release versions are cut from `main` so a given state can be downloaded and pinned
+(`rost = { git = "https://github.com/rost-rs/rost.git", tag = "v0.2.0-alpha.1" }`).
+Nothing is published to crates.io until `0.2.0` (Sprint 12).
+
+| Checkpoint | Version | Reached when | Status |
+|---|---|---|---|
+| Alpha 1 | `0.2.0-alpha.1` | Sprint 5 merged: fast core, serde, JSON superset and strict JSON API, CI perf gate | **released** (2026-11-01) |
+| Alpha 2 | `0.2.0-alpha.2` | Sprint 7 merged: indexed structure, `.rostc`, `#[derive(Rost)]` and validation | pending |
+| Beta 1 | `0.2.0-beta.1` | Sprint 9 merged: CSS core and UI adapters (API may still change, features complete for styling) | pending |
+| Beta 2 | `0.2.0-beta.2` | Sprint 11 merged: state, transactions, declarative bindings and API contracts | pending |
+| RC / Release | `0.2.0-rc.1` → `0.2.0` | Sprint 12 merged: CLI, spec, docs; published on crates.io | pending |
+| Stable | `1.0.0` | Spec frozen, no breaking changes planned | pending |
+
+**Checkpoint ritual** (done as part of closing the sprint that reaches it, after the user approves it):
+
+1. On `sprints`: bump `version` in `Cargo.toml` (and `Cargo.lock`), add the release to
+   `CHANGELOG.md`, update the install snippet in `README.md`, and mark the row above.
+   One commit: `chore(release): X.Y.Z-pre.N`.
+2. Merge `sprints` into `main` with `--no-ff`.
+3. Tag `main` with an annotated tag `vX.Y.Z-pre.N` (tests and clippy must pass on the tagged commit).
+4. Nothing is pushed without an explicit request.
+
 ---
 
 ## Sprint 1 — Trustworthy core
