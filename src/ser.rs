@@ -108,6 +108,18 @@ fn write_document<T: ?Sized + Serialize>(value: &T, pretty: bool) -> Result<Stri
     Ok(w.out)
 }
 
+/// Serializes `value` as it would appear inside a list: `1`, `"text"`, `[1, 2]`, `{ a: 1 }`.
+/// Any value is accepted, including scalars that cannot be a document root.
+pub(crate) fn to_fragment<T: ?Sized + Serialize>(value: &T, pretty: bool) -> Result<String, DeError> {
+    let mut w = Writer { out: String::new(), pretty, depth: 0 };
+    value.serialize(ValueSerializer { w: &mut w, ctx: Ctx::Item(&mut Layout { first: true, multiline: false }) })?;
+    // A spanning item starts on its own line inside a list; standalone it does not.
+    Ok(match w.out.strip_prefix('\n') {
+        Some(rest) => rest.to_string(),
+        None => w.out,
+    })
+}
+
 /// Output buffer and layout state.
 struct Writer {
     out: String,

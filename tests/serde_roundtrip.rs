@@ -139,3 +139,69 @@ fn unrepresentable_values_are_errors() {
     assert!(err(rost::to_string(&HashMap::from([("v", f64::NAN)]))).contains("non-finite"));
     assert!(err(rost::to_string(&HashMap::from([(vec![1], 1)]))).contains("map keys must be"));
 }
+
+#[test]
+fn value_tree_api() {
+    use rost::{Map, Value};
+
+    let src = "title: \"demo\"\ncount: 3\nratio: 0.5\nok: true\nnone: null\ncolor: #ff0000\nsize: 140px\ntags [a, \"b\"]\n#window {\n    width: 1280\n    inner { deep: 1 }\n}\nshape { Circle: 2.0 }\n";
+    let v: Value = rost::from_str(src).unwrap();
+    assert_eq!(v, rost::from_template::<Value>(&rost::Template::parse(src).unwrap()).unwrap());
+
+    assert_eq!(v["title"], "demo");
+    assert_eq!(v["count"], 3);
+    assert_eq!(v["ratio"], 0.5);
+    assert_eq!(v["ok"], true);
+    assert!(v["none"].is_null());
+    assert_eq!(v["color"].as_i64(), Some(0xff0000));
+    assert_eq!(v["size"], "140px");
+    assert_eq!(v["tags"][1], "b");
+    assert!(v["tags"][9].is_null());
+    assert_eq!(v["window"]["inner"]["deep"].as_u64(), Some(1));
+    assert!(v["window"]["missing"]["deeper"].is_null());
+    assert_eq!(v.as_block().unwrap().keys().next().map(String::as_str), Some("title"));
+
+    // Order is kept when written back.
+    let written = rost::to_string_pretty(&v).unwrap();
+    assert!(written.starts_with("title: \"demo\"\ncount: 3\nratio: 0.5\nok: true\nnone: null\n"), "{written}");
+    assert_eq!(rost::from_str::<Value>(&written).unwrap(), v);
+
+    // Typed extraction, including enums.
+    #[derive(Deserialize, Debug, PartialEq)]
+    struct Window {
+        width: u32,
+        inner: BTreeMap<String, u8>,
+    }
+    let w: Window = rost::from_value(v["window"].clone()).unwrap();
+    assert_eq!(w, Window { width: 1280, inner: BTreeMap::from([("deep".into(), 1)]) });
+    assert_eq!(rost::from_value::<Shape>(v["shape"].clone()).unwrap(), Shape::Circle(2.0));
+    assert_eq!(rost::from_value::<Shape>(Value::from("Empty")).unwrap(), Shape::Empty);
+    assert_eq!(rost::from_value::<Option<u8>>(Value::Null).unwrap(), None);
+
+    // Mutation through IndexMut builds blocks on demand.
+    let mut m = Value::Null;
+    m["a"]["b"] = Value::from(vec![1, 2]);
+    m["a"]["b"][0] = Value::from("x");
+    m["n"] = Value::from(u64::MAX);
+    assert_eq!(m.to_string(), "a { b [\"x\", 2] }, n: 1.8446744073709552e19");
+    assert_eq!(format!("{m:#}"), "a {\n    b [\"x\", 2]\n}\nn: 1.8446744073709552e19\n");
+    // A block displays as a document of its own.
+    assert_eq!(m["a"].to_string(), "b [\"x\", 2]");
+
+    // Large maps switch to a hash index and keep insertion order and replacement semantics.
+    let mut big: Map = (0..100).map(|i| (format!("k{i}"), i)).collect();
+    assert_eq!(big.insert("k50", Value::from("new")), Some(Value::from(50)));
+    assert_eq!(big.remove("k0"), Some(Value::from(0)));
+    assert_eq!(big.len(), 99);
+    assert_eq!(big["k50"], "new");
+    assert_eq!(big.keys().next().map(String::as_str), Some("k1"));
+    assert_eq!(big["k99"], 99);
+    assert!(!big.contains_key("k0"));
+}
+
+#[test]
+#[should_panic(expected = "cannot index an integer with a key")]
+fn value_index_mut_on_scalar_panics() {
+    let mut v = rost::Value::from(1);
+    v["a"] = rost::Value::Null;
+}

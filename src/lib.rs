@@ -98,6 +98,8 @@ pub mod de;
 mod ser;
 #[cfg(feature = "serde")]
 mod text;
+#[cfg(feature = "serde")]
+pub mod value;
 
 pub use error::{ParseError, ParseErrorKind};
 pub use field::{Dimension, ParsedField, QuoteStyle, Scalar};
@@ -115,6 +117,8 @@ pub use de::DeError as Error;
 pub use ser::{to_string, to_string_pretty, to_vec, to_vec_pretty, to_writer, to_writer_pretty};
 #[cfg(feature = "serde")]
 pub use text::{from_reader, from_slice, from_str};
+#[cfg(feature = "serde")]
+pub use value::{from_value, Map, Value};
 
 use std::fs;
 use std::path::{Path, PathBuf};
