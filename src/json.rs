@@ -283,6 +283,10 @@ impl Sink for Build {
     }
 }
 
+/// The error inside the parser is boxed: a `Result<(), Box<_>>` is one register, where a
+/// `Result<(), ParseError>` would be written to and read from memory by every call.
+type Fail = Box<ParseError>;
+
 struct Parser<'a, S> {
     text: &'a str,
     src: &'a [u8],
@@ -302,11 +306,15 @@ impl<'a, S: Sink> Parser<'a, S> {
         }
     }
 
-    fn error(&self, msg: &'static str) -> ParseError {
-        json_error(self.src, self.pos, self.pos + 1, msg)
+    fn error(&self, msg: &'static str) -> Fail {
+        Box::new(json_error(self.src, self.pos, self.pos + 1, msg))
     }
 
     fn document(&mut self) -> Result<S::Value, ParseError> {
+        self.document_inner().map_err(|e| *e)
+    }
+
+    fn document_inner(&mut self) -> Result<S::Value, Fail> {
         self.skip_ws();
         let value = self.value()?;
         self.skip_ws();
@@ -326,7 +334,7 @@ impl<'a, S: Sink> Parser<'a, S> {
         self.src.get(self.pos).copied()
     }
 
-    fn literal(&mut self, word: &[u8]) -> Result<(), ParseError> {
+    fn literal(&mut self, word: &[u8]) -> Result<(), Fail> {
         if self.src[self.pos..].starts_with(word) {
             self.pos += word.len();
             Ok(())
@@ -335,7 +343,7 @@ impl<'a, S: Sink> Parser<'a, S> {
         }
     }
 
-    fn value(&mut self) -> Result<S::Value, ParseError> {
+    fn value(&mut self) -> Result<S::Value, Fail> {
         match self.peek() {
             Some(b'{') => self.object(),
             Some(b'[') => self.array(),
@@ -351,7 +359,7 @@ impl<'a, S: Sink> Parser<'a, S> {
         }
     }
 
-    fn enter(&mut self) -> Result<(), ParseError> {
+    fn enter(&mut self) -> Result<(), Fail> {
         if self.depth == MAX_DEPTH {
             return Err(self.error("nested too deeply"));
         }
@@ -361,7 +369,7 @@ impl<'a, S: Sink> Parser<'a, S> {
         Ok(())
     }
 
-    fn array(&mut self) -> Result<S::Value, ParseError> {
+    fn array(&mut self) -> Result<S::Value, Fail> {
         self.enter()?;
         let mut array = self.sink.array();
         if self.peek() != Some(b']') {
@@ -384,7 +392,7 @@ impl<'a, S: Sink> Parser<'a, S> {
         Ok(self.sink.end_array(array))
     }
 
-    fn object(&mut self) -> Result<S::Value, ParseError> {
+    fn object(&mut self) -> Result<S::Value, Fail> {
         self.enter()?;
         let mut object = self.sink.object();
         if self.peek() != Some(b'}') {
@@ -426,7 +434,7 @@ impl<'a, S: Sink> Parser<'a, S> {
         self.pos - start
     }
 
-    fn number(&mut self) -> Result<S::Value, ParseError> {
+    fn number(&mut self) -> Result<S::Value, Fail> {
         let start = self.pos;
         if self.peek() == Some(b'-') {
             self.pos += 1;
@@ -460,11 +468,11 @@ impl<'a, S: Sink> Parser<'a, S> {
         let text = &self.text[start..self.pos];
         self.sink
             .number(text, integer)
-            .ok_or_else(|| json_error(self.src, start, self.pos, "number out of range"))
+            .ok_or_else(|| Box::new(json_error(self.src, start, self.pos, "number out of range")))
     }
 
     /// Reads a string starting at its opening quote; borrows it when it has no escapes.
-    fn string(&mut self) -> Result<Cow<'a, str>, ParseError> {
+    fn string(&mut self) -> Result<Cow<'a, str>, Fail> {
         self.pos += 1;
         let start = self.pos;
         loop {
@@ -506,7 +514,7 @@ impl<'a, S: Sink> Parser<'a, S> {
     }
 
     #[cold]
-    fn escaped_string(&mut self, start: usize) -> Result<String, ParseError> {
+    fn escaped_string(&mut self, start: usize) -> Result<String, Fail> {
         let mut out = self.text[start..self.pos].to_owned();
         loop {
             let run = self.pos;
@@ -549,7 +557,7 @@ impl<'a, S: Sink> Parser<'a, S> {
         }
     }
 
-    fn hex4(&mut self) -> Result<u32, ParseError> {
+    fn hex4(&mut self) -> Result<u32, Fail> {
         let mut v = 0;
         for _ in 0..4 {
             let d = match self.peek() {
@@ -565,23 +573,23 @@ impl<'a, S: Sink> Parser<'a, S> {
     }
 
     /// Decodes the digits after `\u`, joining a surrogate pair into one char.
-    fn unicode_escape(&mut self) -> Result<char, ParseError> {
+    fn unicode_escape(&mut self) -> Result<char, Fail> {
         let at = self.pos;
         let hi = self.hex4()?;
         let code = match hi {
             0xD800..=0xDBFF => {
                 if !self.src[self.pos..].starts_with(b"\\u") {
-                    return Err(json_error(self.src, at, self.pos, "unpaired surrogate"));
+                    return Err(Box::new(json_error(self.src, at, self.pos, "unpaired surrogate")));
                 }
                 self.pos += 2;
                 let lo = self.hex4()?;
                 if !(0xDC00..=0xDFFF).contains(&lo) {
-                    return Err(json_error(self.src, at, self.pos, "unpaired surrogate"));
+                    return Err(Box::new(json_error(self.src, at, self.pos, "unpaired surrogate")));
                 }
                 0x10000 + ((hi - 0xD800) << 10) + (lo - 0xDC00)
             }
             0xDC00..=0xDFFF => {
-                return Err(json_error(self.src, at, self.pos, "unpaired surrogate"));
+                return Err(Box::new(json_error(self.src, at, self.pos, "unpaired surrogate")));
             }
             _ => hi,
         };
