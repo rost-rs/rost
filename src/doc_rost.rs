@@ -9,7 +9,7 @@ use crate::doc::{Doc, Node, Tape};
 
 pub(crate) fn build(src: &str) -> Result<Doc<'_>, DeError> {
     if src.len() > crate::parser::MAX_DOCUMENT_LEN {
-        return Err(DeError("document is larger than 4 GiB".into()));
+        return Err(DeError::new("document is larger than 4 GiB"));
     }
     let mut tape = Tape::new(src);
     crate::text::from_str_seed(src, Value(&mut tape))?;

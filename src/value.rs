@@ -539,7 +539,7 @@ impl<'de> Deserializer<'de> for Value {
         match self {
             Value::String(s) => visitor.visit_enum(s.into_deserializer()),
             Value::Block(map) => visitor.visit_enum(MapEnum(de::value::MapDeserializer::new(map.into_iter()))),
-            other => Err(DeError(format!("expected an enum, found {}", other.kind()))),
+            other => Err(DeError::new(format!("expected an enum, found {}", other.kind()))),
         }
     }
 

@@ -92,7 +92,7 @@ fn deserialize_wrapped<'de, S: DeserializeSeed<'de>>(parser: &mut Parser<'de>, s
 ///
 /// The bytes must be valid UTF-8; see [`from_str`].
 pub fn from_slice<'de, T: de::Deserialize<'de>>(bytes: &'de [u8]) -> Result<T, DeError> {
-    let src = std::str::from_utf8(bytes).map_err(|e| DeError(format!("invalid UTF-8: {e}")))?;
+    let src = std::str::from_utf8(bytes).map_err(|e| DeError::new(format!("invalid UTF-8: {e}")))?;
     from_str(src)
 }
 
@@ -115,7 +115,7 @@ pub fn from_slice<'de, T: de::Deserialize<'de>>(bytes: &'de [u8]) -> Result<T, D
 /// ```
 pub fn from_reader<R: std::io::Read, T: de::DeserializeOwned>(mut reader: R) -> Result<T, DeError> {
     let mut src = String::new();
-    reader.read_to_string(&mut src).map_err(|e| DeError(format!("I/O error: {e}")))?;
+    reader.read_to_string(&mut src).map_err(|e| DeError::new(format!("I/O error: {e}")))?;
     from_str(&src)
 }
 
@@ -226,14 +226,14 @@ impl<'de> Parser<'de> {
     #[cold]
     fn error(&self, msg: &str) -> DeError {
         if !self.locate {
-            return DeError(msg.to_string());
+            return DeError::new(msg.to_string());
         }
         let at = self.pos.min(self.bytes.len());
         let before = &self.bytes[..at];
         let line = memchr::Memchr::new(b'\n', before).count() + 1;
         let line_start = memchr::memrchr(b'\n', before).map_or(0, |p| p + 1);
         let column = self.src[line_start..at].chars().count() + 1;
-        DeError(format!("{line}:{column}: {msg}"))
+        DeError::new(format!("{line}:{column}: {msg}"))
     }
 
     #[inline(always)]
@@ -651,7 +651,7 @@ impl<'de> MapAccess<'de> for Entries<'_, 'de> {
                 let first = body.split(',').next().unwrap_or("").trim();
                 seed.deserialize(BorrowedStrDeserializer::new(first))
             }
-            None => Err(DeError("next_value called before next_key".into())),
+            None => Err(DeError::new("next_value called before next_key")),
         }
     }
 }

@@ -13,12 +13,31 @@ use super::query::BlockView;
 use super::Template;
 
 /// Error type encountered during `.rost` deserialization.
+///
+/// The message is boxed: the deserializer returns a `Result` from every field, and a
+/// pointer-sized error keeps those results in registers instead of in memory.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DeError(pub String);
+pub struct DeError(Box<Message>);
+
+/// The text of a [`DeError`], behind its pointer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Message(String);
+
+impl DeError {
+    /// An error with the given message.
+    pub fn new(msg: impl Into<String>) -> Self {
+        DeError(Box::new(Message(msg.into())))
+    }
+
+    /// The error message.
+    pub fn message(&self) -> &str {
+        &self.0 .0
+    }
+}
 
 impl fmt::Display for DeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
+        f.write_str(self.message())
     }
 }
 
@@ -26,7 +45,7 @@ impl std::error::Error for DeError {}
 
 impl de::Error for DeError {
     fn custom<T: fmt::Display>(msg: T) -> Self {
-        DeError(msg.to_string())
+        DeError::new(msg.to_string())
     }
 }
 
@@ -61,7 +80,7 @@ macro_rules! deserialize_integers {
         fn $method<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
             match parse_integer::<$ty>(self.value) {
                 Some(v) => visitor.$visit(v),
-                None => Err(DeError(format!(
+                None => Err(DeError::new(format!(
                     "cannot parse '{}' as {}: {}",
                     self.name,
                     stringify!($ty),
@@ -161,7 +180,7 @@ impl<'de> Deserializer<'de> for FieldDeserializer<'de> {
         match s {
             "true" | "1" | "yes" | "on" => visitor.visit_bool(true),
             "false" | "0" | "no" | "off" => visitor.visit_bool(false),
-            _ => Err(DeError(format!("cannot parse '{}' as bool: {}", self.name, s))),
+            _ => Err(DeError::new(format!("cannot parse '{}' as bool: {}", self.name, s))),
         }
     }
 
@@ -181,7 +200,7 @@ impl<'de> Deserializer<'de> for FieldDeserializer<'de> {
         if let Some(v) = parse_fast_f32(self.value) {
             return visitor.visit_f32(v);
         }
-        Err(DeError(format!("cannot parse '{}' as f32: {}", self.name, self.value)))
+        Err(DeError::new(format!("cannot parse '{}' as f32: {}", self.name, self.value)))
     }
 
     #[inline]
@@ -189,7 +208,7 @@ impl<'de> Deserializer<'de> for FieldDeserializer<'de> {
         if let Some(v) = parse_fast_f64(self.value) {
             return visitor.visit_f64(v);
         }
-        Err(DeError(format!("cannot parse '{}' as f64: {}", self.name, self.value)))
+        Err(DeError::new(format!("cannot parse '{}' as f64: {}", self.name, self.value)))
     }
 
     #[inline]
@@ -241,7 +260,7 @@ macro_rules! key_integers {
             let key = self.0.as_ref();
             match key.parse::<$ty>() {
                 Ok(v) => visitor.$visit(v),
-                Err(_) => Err(DeError(format!("invalid {} map key: {}", stringify!($ty), key))),
+                Err(_) => Err(DeError::new(format!("invalid {} map key: {}", stringify!($ty), key))),
             }
         }
     )*};
@@ -315,7 +334,7 @@ impl<'de, K: KeyText<'de>> Deserializer<'de> for KeyDeserializer<K> {
         match self.0.as_ref() {
             "true" => visitor.visit_bool(true),
             "false" => visitor.visit_bool(false),
-            key => Err(DeError(format!("invalid bool map key: {key}"))),
+            key => Err(DeError::new(format!("invalid bool map key: {key}"))),
         }
     }
 
@@ -354,7 +373,7 @@ impl<'de, M: MapAccess<'de, Error = DeError>> MapEnum<M> {
     /// Rejects any entry after the variant.
     fn end(&mut self) -> Result<(), DeError> {
         match self.0.next_key::<IgnoredAny>()? {
-            Some(_) => Err(DeError("expected a single enum variant in the block".into())),
+            Some(_) => Err(DeError::new("expected a single enum variant in the block")),
             None => Ok(()),
         }
     }
@@ -367,7 +386,7 @@ impl<'de, M: MapAccess<'de, Error = DeError>> EnumAccess<'de> for MapEnum<M> {
     fn variant_seed<V: DeserializeSeed<'de>>(mut self, seed: V) -> Result<(V::Value, Self), DeError> {
         match self.0.next_key_seed(seed)? {
             Some(variant) => Ok((variant, self)),
-            None => Err(DeError("expected an enum variant, found an empty block".into())),
+            None => Err(DeError::new("expected an enum variant, found an empty block")),
         }
     }
 }
@@ -650,7 +669,7 @@ impl<'de, 's> MapAccess<'de> for BlockMapStreamAccess<'de, 's> {
     }
 
     fn next_value_seed<V: DeserializeSeed<'de>>(&mut self, seed: V) -> Result<V::Value, Self::Error> {
-        match self.current_entry.take().ok_or_else(|| DeError("missing stream entry".into()))? {
+        match self.current_entry.take().ok_or_else(|| DeError::new("missing stream entry"))? {
             StreamEntry::Field { name, val, quote } => {
                 seed.deserialize(FieldDeserializer { name, value: val, quote })
             }
@@ -765,7 +784,7 @@ impl Template {
         }
 
         if !found {
-            return Err(DeError(format!("block '{}' not found in template", selector)));
+            return Err(DeError::new(format!("block '{}' not found in template", selector)));
         }
 
         let mut stream = BytecodeStream::new(&self.data, &self.fields, idx);

@@ -1,3 +1,5 @@
+#![cfg(feature = "serde")]
+
 //! A `Doc` is built with a handful of allocations however many keys and strings the
 //! document repeats: names are slices of the source, not copies (or shared copies).
 
