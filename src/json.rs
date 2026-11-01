@@ -30,6 +30,7 @@
 //! ```
 
 use std::borrow::Cow;
+use crate::doc::Node;
 
 use crate::error::{ParseError, ParseErrorKind};
 
@@ -114,6 +115,8 @@ trait Sink {
     type Value;
     type Array;
     type Object;
+    /// An object key, made as soon as it is read so that sinks can store it before its value.
+    type Key;
 
     fn null(&mut self) -> Self::Value;
     fn bool(&mut self, b: bool) -> Self::Value;
@@ -124,7 +127,8 @@ trait Sink {
     fn push(&mut self, array: &mut Self::Array, value: Self::Value);
     fn end_array(&mut self, array: Self::Array) -> Self::Value;
     fn object(&mut self) -> Self::Object;
-    fn insert(&mut self, object: &mut Self::Object, key: Cow<'_, str>, value: Self::Value);
+    fn key(&mut self, key: Cow<'_, str>) -> Self::Key;
+    fn insert(&mut self, object: &mut Self::Object, key: Self::Key, value: Self::Value);
     fn end_object(&mut self, object: Self::Object) -> Self::Value;
 }
 
@@ -134,6 +138,7 @@ impl Sink for Validate {
     type Value = ();
     type Array = ();
     type Object = ();
+    type Key = ();
 
     fn null(&mut self) {}
     fn bool(&mut self, _: bool) {}
@@ -149,8 +154,76 @@ impl Sink for Validate {
     fn push(&mut self, _: &mut (), _: ()) {}
     fn end_array(&mut self, _: ()) {}
     fn object(&mut self) {}
-    fn insert(&mut self, _: &mut (), _: Cow<'_, str>, _: ()) {}
+    fn key(&mut self, _: Cow<'_, str>) {}
+    fn insert(&mut self, _: &mut (), _: (), _: ()) {}
     fn end_object(&mut self, _: ()) {}
+}
+
+/// Builds a [`Doc`](crate::doc::Doc) tape: values are written in document order, so every
+/// container's children follow it directly.
+struct TapeSink(crate::doc::Tape);
+
+impl Sink for TapeSink {
+    type Value = ();
+    /// (index of the container node, entries so far)
+    type Array = (u32, u32);
+    type Object = (u32, u32);
+    type Key = ();
+
+    fn null(&mut self) {
+        self.0.push(Node::Null);
+    }
+    fn bool(&mut self, b: bool) {
+        self.0.push(Node::Bool(b));
+    }
+    fn number(&mut self, text: &str, integer: bool) -> Option<()> {
+        // `-0` has no i64 form; as a float it keeps its sign, like the rost readers.
+        let node = match integer.then(|| text.parse::<i64>().ok()).flatten() {
+            Some(i) if i != 0 || !text.starts_with('-') => Node::Int(i),
+            _ => Node::Float(finite(text)?),
+        };
+        self.0.push(node);
+        Some(())
+    }
+    fn string(&mut self, s: Cow<'_, str>) {
+        match s {
+            Cow::Borrowed(s) => self.0.string(s),
+            Cow::Owned(s) => self.0.owned_string(s),
+        };
+    }
+    fn array(&mut self) -> (u32, u32) {
+        (self.0.open(false), 0)
+    }
+    fn push(&mut self, array: &mut (u32, u32), _: ()) {
+        array.1 += 1;
+    }
+    fn end_array(&mut self, (at, len): (u32, u32)) {
+        self.0.close(at, len);
+    }
+    fn object(&mut self) -> (u32, u32) {
+        (self.0.open(true), 0)
+    }
+    fn key(&mut self, key: Cow<'_, str>) {
+        match key {
+            Cow::Borrowed(s) => self.0.string(s),
+            Cow::Owned(s) => self.0.owned_string(s),
+        };
+    }
+    fn insert(&mut self, object: &mut (u32, u32), _: (), _: ()) {
+        object.1 += 1;
+    }
+    fn end_object(&mut self, (at, len): (u32, u32)) {
+        self.0.close(at, len);
+    }
+}
+
+pub(crate) fn to_doc(src: &str) -> Result<crate::doc::Doc<'_>, ParseError> {
+    if src.len() > crate::parser::MAX_DOCUMENT_LEN {
+        return Err(ParseError::new(crate::ParseErrorKind::TooLarge, &[], 0..0));
+    }
+    let mut parser = Parser::new(src, TapeSink(crate::doc::Tape::new(src)));
+    parser.document()?;
+    Ok(crate::doc::Doc::from_tape(src, parser.sink.0))
 }
 
 /// Parses a number that must stay finite: `1e400` has no `f64` and is rejected.
@@ -166,6 +239,7 @@ impl Sink for Build {
     type Value = crate::Value;
     type Array = Vec<crate::Value>;
     type Object = crate::Map;
+    type Key = String;
 
     fn null(&mut self) -> crate::Value {
         crate::Value::Null
@@ -198,8 +272,11 @@ impl Sink for Build {
     fn object(&mut self) -> crate::Map {
         crate::Map::new()
     }
-    fn insert(&mut self, object: &mut crate::Map, key: Cow<'_, str>, value: crate::Value) {
-        object.insert(key.into_owned(), value);
+    fn key(&mut self, key: Cow<'_, str>) -> String {
+        key.into_owned()
+    }
+    fn insert(&mut self, object: &mut crate::Map, key: String, value: crate::Value) {
+        object.insert(key, value);
     }
     fn end_object(&mut self, object: crate::Map) -> crate::Value {
         crate::Value::Block(object)
@@ -229,7 +306,7 @@ impl<'a, S: Sink> Parser<'a, S> {
         json_error(self.src, self.pos, self.pos + 1, msg)
     }
 
-    fn document(mut self) -> Result<S::Value, ParseError> {
+    fn document(&mut self) -> Result<S::Value, ParseError> {
         self.skip_ws();
         let value = self.value()?;
         self.skip_ws();
@@ -316,6 +393,7 @@ impl<'a, S: Sink> Parser<'a, S> {
                     return Err(self.error("expected a string key"));
                 }
                 let key = self.string()?;
+                let key = self.sink.key(key);
                 self.skip_ws();
                 if self.peek() != Some(b':') {
                     return Err(self.error("expected `:`"));

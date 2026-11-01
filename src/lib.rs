@@ -83,6 +83,9 @@
 //! ```
 
 pub mod block;
+pub mod doc;
+#[cfg(feature = "serde")]
+mod doc_rost;
 mod bytes;
 pub mod error;
 pub mod field;

@@ -86,6 +86,10 @@ fn main() {
         });
         row(name, "rost::from_str → Value", len, d);
         let d = median(11, || {
+            black_box(rost::doc::Doc::from_json(black_box(src)).unwrap());
+        });
+        row(name, "rost::doc::Doc::from_json", len, d);
+        let d = median(11, || {
             black_box(serde_json::from_str::<serde_json::Value>(black_box(src)).unwrap());
         });
         row(name, "serde_json::Value", len, d);

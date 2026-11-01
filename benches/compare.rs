@@ -238,6 +238,14 @@ fn main() {
     });
     row(tree, "**rost::json::from_str** (strict JSON)", throughput(json_src.len(), d));
     let d = median(9, || {
+        black_box(rost::doc::Doc::from_json(black_box(&json_src)).unwrap());
+    });
+    row(tree, "**rost::doc::Doc::from_json** (borrowed tape)", throughput(json_src.len(), d));
+    let d = median(9, || {
+        black_box(rost::doc::Doc::from_rost(black_box(&rost_src)).unwrap());
+    });
+    row(tree, "**rost::doc::Doc::from_rost** (borrowed tape)", throughput(rost_src.len(), d));
+    let d = median(9, || {
         black_box(sonic_rs::from_str::<sonic_rs::Value>(black_box(&json_src)).unwrap());
     });
     row(tree, "sonic_rs::Value", throughput(json_src.len(), d));

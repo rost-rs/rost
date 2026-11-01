@@ -47,11 +47,17 @@ use crate::parser::{find_list_end, root_braces, KEY_END, find_unescaped_quote, f
 /// assert_eq!((config.window.width, config.window.scale), (1280, 1.25));
 /// ```
 pub fn from_str<'de, T: de::Deserialize<'de>>(src: &'de str) -> Result<T, DeError> {
+    from_str_seed(src, std::marker::PhantomData::<T>)
+}
+
+/// [`from_str`] for a [`DeserializeSeed`], which can carry state into the deserialization.
+#[inline]
+pub(crate) fn from_str_seed<'de, S: DeserializeSeed<'de>>(src: &'de str, seed: S) -> Result<S::Value, DeError> {
     let mut parser = Parser { src, bytes: src.as_bytes(), pos: 0, locate: true };
     let value = match parser.bytes.get(skip_trivia(parser.bytes, 0)) {
         // JSON-shaped documents take their own path, so plain `.rost` roots stay lean.
-        Some(b'{' | b'[') => deserialize_wrapped(&mut parser)?,
-        _ => T::deserialize(Root { p: &mut parser })?,
+        Some(b'{' | b'[') => deserialize_wrapped(&mut parser, seed)?,
+        _ => seed.deserialize(Root { p: &mut parser })?,
     };
     parser.skip_trivia();
     if parser.pos < parser.bytes.len() {
@@ -63,21 +69,21 @@ pub fn from_str<'de, T: de::Deserialize<'de>>(src: &'de str) -> Result<T, DeErro
 /// Deserializes a document that starts with `{` (a JSON object, read as its contents) or
 /// `[` (a top-level list, as JSON arrays are).
 #[inline(never)]
-fn deserialize_wrapped<'de, T: de::Deserialize<'de>>(parser: &mut Parser<'de>) -> Result<T, DeError> {
+fn deserialize_wrapped<'de, S: DeserializeSeed<'de>>(parser: &mut Parser<'de>, seed: S) -> Result<S::Value, DeError> {
     parser.skip_trivia();
     if parser.peek() == Some(b'[') {
         parser.pos += 1;
-        return T::deserialize(List { p: parser });
+        return seed.deserialize(List { p: parser });
     }
     let Some((start, end)) = root_braces(&parser.bytes[parser.pos..]).map(|(s, e)| (parser.pos + s, parser.pos + e))
     else {
         // No closing brace at the end: not a wrapped document, so report it as `.rost`.
-        return T::deserialize(Root { p: parser });
+        return seed.deserialize(Root { p: parser });
     };
     // Truncating at the closing brace keeps positions absolute, and matches where the
     // bytecode parser ends the document.
     let mut body = Parser { src: &parser.src[..end], bytes: &parser.bytes[..end], pos: start, locate: parser.locate };
-    let value = T::deserialize(Root { p: &mut body })?;
+    let value = seed.deserialize(Root { p: &mut body })?;
     parser.pos = end + 1;
     Ok(value)
 }
