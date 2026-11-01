@@ -238,27 +238,64 @@ macro_rules! key_integers {
     ($($method:ident => $visit:ident: $ty:ty),* $(,)?) => {$(
         #[inline]
         fn $method<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
-            match self.0.parse::<$ty>() {
+            let key = self.0.as_ref();
+            match key.parse::<$ty>() {
                 Ok(v) => visitor.$visit(v),
-                Err(_) => Err(DeError(format!("invalid {} map key: {}", stringify!($ty), self.0))),
+                Err(_) => Err(DeError(format!("invalid {} map key: {}", stringify!($ty), key))),
             }
         }
     )*};
 }
 
+/// Text of a key: borrowed from the document, or decoded from a quoted key with escapes.
+pub(crate) trait KeyText<'de>: AsRef<str> {
+    fn visit<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, DeError>;
+    fn visit_enum<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, DeError>;
+}
+
+impl<'de> KeyText<'de> for &'de str {
+    #[inline]
+    fn visit<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, DeError> {
+        visitor.visit_borrowed_str(self)
+    }
+
+    fn visit_enum<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, DeError> {
+        visitor.visit_enum(BorrowedStrDeserializer::new(self))
+    }
+}
+
+impl<'de> KeyText<'de> for String {
+    fn visit<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, DeError> {
+        visitor.visit_string(self)
+    }
+
+    fn visit_enum<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, DeError> {
+        visitor.visit_enum(de::value::StringDeserializer::<DeError>::new(self))
+    }
+}
+
 /// A key: a string that also reads as an integer, a bool or a unit variant, so maps
 /// such as `HashMap<u32, T>` work like they do in `serde_json`.
-pub(crate) struct KeyDeserializer<'a>(pub(crate) Cow<'a, str>);
+///
+/// Generic over the key text so that the common borrowed key pays nothing for the rare
+/// decoded one.
+pub(crate) struct KeyDeserializer<K>(pub(crate) K);
 
-impl<'de> Deserializer<'de> for KeyDeserializer<'de> {
+/// Deserializes `key` with `seed`, picking the borrowed or decoded key deserializer.
+#[inline]
+pub(crate) fn deserialize_key<'de, S: DeserializeSeed<'de>>(seed: S, key: Cow<'de, str>) -> Result<S::Value, DeError> {
+    match key {
+        Cow::Borrowed(key) => seed.deserialize(KeyDeserializer(key)),
+        Cow::Owned(key) => seed.deserialize(KeyDeserializer(key)),
+    }
+}
+
+impl<'de, K: KeyText<'de>> Deserializer<'de> for KeyDeserializer<K> {
     type Error = DeError;
 
     #[inline]
     fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
-        match self.0 {
-            Cow::Borrowed(s) => visitor.visit_borrowed_str(s),
-            Cow::Owned(s) => visitor.visit_string(s),
-        }
+        self.0.visit(visitor)
     }
 
     key_integers! {
@@ -275,10 +312,10 @@ impl<'de> Deserializer<'de> for KeyDeserializer<'de> {
     }
 
     fn deserialize_bool<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
-        match &*self.0 {
+        match self.0.as_ref() {
             "true" => visitor.visit_bool(true),
             "false" => visitor.visit_bool(false),
-            _ => Err(DeError(format!("invalid bool map key: {}", self.0))),
+            key => Err(DeError(format!("invalid bool map key: {key}"))),
         }
     }
 
@@ -296,10 +333,7 @@ impl<'de> Deserializer<'de> for KeyDeserializer<'de> {
         _variants: &'static [&'static str],
         visitor: V,
     ) -> Result<V::Value, Self::Error> {
-        match self.0 {
-            Cow::Borrowed(s) => visitor.visit_enum(BorrowedStrDeserializer::new(s)),
-            Cow::Owned(s) => visitor.visit_enum(de::value::StringDeserializer::<DeError>::new(s)),
-        }
+        self.0.visit_enum(visitor)
     }
 
     serde::forward_to_deserialize_any! {
@@ -559,8 +593,7 @@ impl<'de, 's> MapAccess<'de> for BlockMapStreamAccess<'de, 's> {
             let tag = self.stream.bytes[self.stream.idx];
             match tag {
                 TAG_COMMON_TEXT => {
-                    let key = resolve_slice(self.stream.data, self.stream.bytes, self.stream.idx + 1);
-                    let key_text = resolve_key(self.stream.data, self.stream.bytes, self.stream.idx + 1);
+                    let (key, key_text) = resolve_key(self.stream.data, self.stream.bytes, self.stream.idx + 1);
                     let val = resolve_slice(self.stream.data, self.stream.bytes, self.stream.idx + 9);
                     let quote = QuoteStyle::detect(
                         self.stream.data,
@@ -569,36 +602,31 @@ impl<'de, 's> MapAccess<'de> for BlockMapStreamAccess<'de, 's> {
                     );
                     self.stream.idx += REC_PAIR;
                     self.current_entry = Some(StreamEntry::Field { name: key, val, quote });
-                    return seed.deserialize(KeyDeserializer(key_text)).map(Some);
+                    return deserialize_key(seed, key_text).map(Some);
                 }
                 TAG_BLOCK_START => {
-                    let name = resolve_key(self.stream.data, self.stream.bytes, self.stream.idx + 1);
+                    let name_at = self.stream.idx + 1;
+                    let (raw, name) = resolve_key(self.stream.data, self.stream.bytes, name_at);
                     self.stream.idx += REC_NAMED;
                     // `#name {` selectors drop their `#`; a quoted key is taken literally.
-                    let name_end = read_u32(self.stream.bytes, self.stream.idx - REC_NAMED + 1) as usize
-                        + read_u32(self.stream.bytes, self.stream.idx - REC_NAMED + 5) as usize;
-                    let clean = match name {
-                        Cow::Borrowed(name) if self.stream.data.get(name_end) != Some(&b'"') => {
-                            Cow::Borrowed(strip_hash(name))
-                        }
-                        other => other,
-                    };
+                    let name_end = read_u32(self.stream.bytes, name_at) as usize + raw.len();
+                    let clean = if self.stream.data.get(name_end) == Some(&b'"') { name } else { Cow::Borrowed(strip_hash(raw)) };
                     self.current_entry = Some(StreamEntry::SubBlock);
-                    return seed.deserialize(KeyDeserializer(clean)).map(Some);
+                    return deserialize_key(seed, clean).map(Some);
                 }
                 TAG_LIST => {
-                    let key = resolve_key(self.stream.data, self.stream.bytes, self.stream.idx + 1);
+                    let (_, key) = resolve_key(self.stream.data, self.stream.bytes, self.stream.idx + 1);
                     let raw = resolve_slice(self.stream.data, self.stream.bytes, self.stream.idx + 9);
                     self.stream.idx += REC_RANGE;
                     self.current_entry = Some(StreamEntry::List { raw });
-                    return seed.deserialize(KeyDeserializer(key)).map(Some);
+                    return deserialize_key(seed, key).map(Some);
                 }
                 TAG_ENUM => {
-                    let key = resolve_key(self.stream.data, self.stream.bytes, self.stream.idx + 1);
+                    let (_, key) = resolve_key(self.stream.data, self.stream.bytes, self.stream.idx + 1);
                     let raw = resolve_slice(self.stream.data, self.stream.bytes, self.stream.idx + 9);
                     self.stream.idx += REC_RANGE;
                     self.current_entry = Some(StreamEntry::Enum { raw });
-                    return seed.deserialize(KeyDeserializer(key)).map(Some);
+                    return deserialize_key(seed, key).map(Some);
                 }
                 TAG_BLOCK_END => {
                     self.stream.idx += REC_BLOCK_END;
@@ -685,7 +713,7 @@ impl<'de> MapAccess<'de> for BlockViewDeserializer<'de> {
             return Ok(None);
         }
         let f = &self.block.fields[self.idx];
-        seed.deserialize(KeyDeserializer(Cow::Borrowed(f.name()))).map(Some)
+        seed.deserialize(KeyDeserializer(f.name())).map(Some)
     }
 
     fn next_value_seed<V: DeserializeSeed<'de>>(&mut self, seed: V) -> Result<V::Value, Self::Error> {
