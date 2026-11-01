@@ -1246,3 +1246,33 @@ fn test_serde_enums_of_every_shape() {
     assert!(err(&src.replace("b { Circle: 1.5 }", "b {}")).contains("empty block"));
     assert!(err(&src.replace("a: Empty", "a: Hexagon")).contains("unknown variant `Hexagon`"));
 }
+
+#[cfg(feature = "serde")]
+#[test]
+fn test_serde_map_keys_beyond_strings() {
+    use serde::Deserialize;
+    use std::collections::BTreeMap;
+
+    #[derive(Debug, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+    enum Level {
+        Low,
+        High,
+    }
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct Doc {
+        ports: BTreeMap<u16, String>,
+        offsets: BTreeMap<i64, bool>,
+        levels: BTreeMap<Level, u8>,
+    }
+
+    let src = "ports {\n    80: \"http\"\n    443: \"https\"\n}\noffsets { -1: true, 2: false }\nlevels { Low: 1, High: 9 }\n";
+    let expected = Doc {
+        ports: BTreeMap::from([(80, "http".into()), (443, "https".into())]),
+        offsets: BTreeMap::from([(-1, true), (2, false)]),
+        levels: BTreeMap::from([(Level::Low, 1), (Level::High, 9)]),
+    };
+    assert_eq!(rost::from_str::<Doc>(src).unwrap(), expected);
+    assert_eq!(rost::from_template::<Doc>(&Template::parse(src).unwrap()).unwrap(), expected);
+    assert!(rost::from_str::<Doc>(&src.replace("80:", "web:")).unwrap_err().to_string().contains("invalid u16 map key: web"));
+}

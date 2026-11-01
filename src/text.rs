@@ -14,7 +14,7 @@ use memchr::{memchr, memchr2};
 use serde::de::value::BorrowedStrDeserializer;
 use serde::de::{self, DeserializeSeed, Deserializer, IgnoredAny, MapAccess, SeqAccess, Visitor};
 
-use crate::de::{DeError, FieldDeserializer, MapEnum};
+use crate::de::{DeError, FieldDeserializer, KeyDeserializer, MapEnum};
 use crate::field::QuoteStyle;
 use crate::parser::{find_list_end, find_unescaped_quote, find_value_end, trim_trailing_ws, IS_DELIM_OR_WS, RAW_QUOTE};
 
@@ -527,7 +527,7 @@ impl<'de> MapAccess<'de> for Entries<'_, 'de> {
         match self.next_entry()? {
             Some(key) => {
                 self.key = key;
-                seed.deserialize(BorrowedStrDeserializer::new(key)).map(Some)
+                seed.deserialize(KeyDeserializer(key)).map(Some)
             }
             None => Ok(None),
         }

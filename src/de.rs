@@ -220,6 +220,78 @@ impl<'de> Deserializer<'de> for FieldDeserializer<'de> {
 }
 
 // ==============================================================================
+// MAP KEYS
+// ==============================================================================
+
+macro_rules! key_integers {
+    ($($method:ident => $visit:ident: $ty:ty),* $(,)?) => {$(
+        #[inline]
+        fn $method<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
+            match self.0.parse::<$ty>() {
+                Ok(v) => visitor.$visit(v),
+                Err(_) => Err(DeError(format!("invalid {} map key: {}", stringify!($ty), self.0))),
+            }
+        }
+    )*};
+}
+
+/// A key: a string that also reads as an integer, a bool or a unit variant, so maps
+/// such as `HashMap<u32, T>` work like they do in `serde_json`.
+pub(crate) struct KeyDeserializer<'a>(pub(crate) &'a str);
+
+impl<'de> Deserializer<'de> for KeyDeserializer<'de> {
+    type Error = DeError;
+
+    #[inline]
+    fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
+        visitor.visit_borrowed_str(self.0)
+    }
+
+    key_integers! {
+        deserialize_i8 => visit_i8: i8,
+        deserialize_i16 => visit_i16: i16,
+        deserialize_i32 => visit_i32: i32,
+        deserialize_i64 => visit_i64: i64,
+        deserialize_i128 => visit_i128: i128,
+        deserialize_u8 => visit_u8: u8,
+        deserialize_u16 => visit_u16: u16,
+        deserialize_u32 => visit_u32: u32,
+        deserialize_u64 => visit_u64: u64,
+        deserialize_u128 => visit_u128: u128,
+    }
+
+    fn deserialize_bool<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
+        match self.0 {
+            "true" => visitor.visit_bool(true),
+            "false" => visitor.visit_bool(false),
+            _ => Err(DeError(format!("invalid bool map key: {}", self.0))),
+        }
+    }
+
+    fn deserialize_option<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
+        visitor.visit_some(self)
+    }
+
+    fn deserialize_newtype_struct<V: Visitor<'de>>(self, _name: &'static str, visitor: V) -> Result<V::Value, Self::Error> {
+        visitor.visit_newtype_struct(self)
+    }
+
+    fn deserialize_enum<V: Visitor<'de>>(
+        self,
+        _name: &'static str,
+        _variants: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, Self::Error> {
+        visitor.visit_enum(BorrowedStrDeserializer::new(self.0))
+    }
+
+    serde::forward_to_deserialize_any! {
+        f32 f64 char str string bytes byte_buf unit unit_struct seq tuple
+        tuple_struct map struct identifier ignored_any
+    }
+}
+
+// ==============================================================================
 // ENUMS WITH DATA
 // ==============================================================================
 
@@ -479,28 +551,28 @@ impl<'de, 's> MapAccess<'de> for BlockMapStreamAccess<'de, 's> {
                     );
                     self.stream.idx += REC_PAIR;
                     self.current_entry = Some(StreamEntry::Field { name: key, val, quote });
-                    return seed.deserialize(BorrowedStrDeserializer::new(key)).map(Some);
+                    return seed.deserialize(KeyDeserializer(key)).map(Some);
                 }
                 TAG_BLOCK_START => {
                     let name = resolve_slice(self.stream.data, self.stream.bytes, self.stream.idx + 1);
                     self.stream.idx += REC_NAMED;
                     let clean = strip_hash(name);
                     self.current_entry = Some(StreamEntry::SubBlock);
-                    return seed.deserialize(BorrowedStrDeserializer::new(clean)).map(Some);
+                    return seed.deserialize(KeyDeserializer(clean)).map(Some);
                 }
                 TAG_LIST => {
                     let key = resolve_slice(self.stream.data, self.stream.bytes, self.stream.idx + 1);
                     let raw = resolve_slice(self.stream.data, self.stream.bytes, self.stream.idx + 9);
                     self.stream.idx += REC_RANGE;
                     self.current_entry = Some(StreamEntry::List { raw });
-                    return seed.deserialize(BorrowedStrDeserializer::new(key)).map(Some);
+                    return seed.deserialize(KeyDeserializer(key)).map(Some);
                 }
                 TAG_ENUM => {
                     let key = resolve_slice(self.stream.data, self.stream.bytes, self.stream.idx + 1);
                     let raw = resolve_slice(self.stream.data, self.stream.bytes, self.stream.idx + 9);
                     self.stream.idx += REC_RANGE;
                     self.current_entry = Some(StreamEntry::Enum { raw });
-                    return seed.deserialize(BorrowedStrDeserializer::new(key)).map(Some);
+                    return seed.deserialize(KeyDeserializer(key)).map(Some);
                 }
                 TAG_BLOCK_END => {
                     self.stream.idx += REC_BLOCK_END;
@@ -587,7 +659,7 @@ impl<'de> MapAccess<'de> for BlockViewDeserializer<'de> {
             return Ok(None);
         }
         let f = &self.block.fields[self.idx];
-        seed.deserialize(BorrowedStrDeserializer::new(f.name())).map(Some)
+        seed.deserialize(KeyDeserializer(f.name())).map(Some)
     }
 
     fn next_value_seed<V: DeserializeSeed<'de>>(&mut self, seed: V) -> Result<V::Value, Self::Error> {
