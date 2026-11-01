@@ -135,7 +135,8 @@ impl<'de> Deserializer<'de> for FieldDeserializer<'de> {
             return visitor.visit_u64(v);
         }
         if let Ok(v) = s.parse::<i64>() {
-            return visitor.visit_i64(v);
+            // `-0` keeps its sign as a float, as in serde_json.
+            return if v == 0 { visitor.visit_f64(-0.0) } else { visitor.visit_i64(v) };
         }
         if (s.starts_with('#') || s.starts_with("0x") || s.starts_with("0X"))
             && let Some(u) = parse_fast_u32(s)
