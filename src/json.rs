@@ -138,6 +138,10 @@ impl Sink for Validate {
     fn null(&mut self) {}
     fn bool(&mut self, _: bool) {}
     fn number(&mut self, text: &str, _: bool) -> Option<()> {
+        // Without an exponent, 300 characters are far below the 1.8e308 limit.
+        if text.len() <= 300 && !text.bytes().any(|b| b | 0x20 == b'e') {
+            return Some(());
+        }
         finite(text).map(drop)
     }
     fn string(&mut self, _: Cow<'_, str>) {}
@@ -203,6 +207,7 @@ impl Sink for Build {
 }
 
 struct Parser<'a, S> {
+    text: &'a str,
     src: &'a [u8],
     pos: usize,
     depth: usize,
@@ -212,6 +217,7 @@ struct Parser<'a, S> {
 impl<'a, S: Sink> Parser<'a, S> {
     fn new(src: &'a str, sink: S) -> Self {
         Self {
+            text: src,
             src: src.as_bytes(),
             pos: 0,
             depth: 0,
@@ -373,7 +379,7 @@ impl<'a, S: Sink> Parser<'a, S> {
             }
         }
         // Only ASCII digits, signs, `.` and `e` were consumed.
-        let text = std::str::from_utf8(&self.src[start..self.pos]).unwrap_or_default();
+        let text = &self.text[start..self.pos];
         self.sink
             .number(text, integer)
             .ok_or_else(|| json_error(self.src, start, self.pos, "number out of range"))
@@ -384,11 +390,12 @@ impl<'a, S: Sink> Parser<'a, S> {
         self.pos += 1;
         let start = self.pos;
         loop {
+            self.skip_plain_chars();
             match self.peek() {
                 None => return Err(self.error("unterminated string")),
                 Some(b'"') => {
                     // Quotes and backslashes are ASCII, so `start..pos` is on char boundaries.
-                    let s = std::str::from_utf8(&self.src[start..self.pos]).unwrap_or_default();
+                    let s = &self.text[start..self.pos];
                     self.pos += 1;
                     return Ok(Cow::Borrowed(s));
                 }
@@ -400,9 +407,29 @@ impl<'a, S: Sink> Parser<'a, S> {
         self.escaped_string(start).map(Cow::Owned)
     }
 
+    /// Skips string bytes that are not `"`, `\` or control characters, eight at a time.
+    #[inline(always)]
+    fn skip_plain_chars(&mut self) {
+        const ONES: u64 = u64::from_ne_bytes([0x01; 8]);
+        const HIGH: u64 = u64::from_ne_bytes([0x80; 8]);
+        let has_zero = |x: u64| x.wrapping_sub(ONES) & !x & HIGH;
+        while let Some(chunk) = self.src.get(self.pos..self.pos + 8) {
+            let x = u64::from_le_bytes(chunk.try_into().unwrap());
+            let special = has_zero(x ^ (ONES * u64::from(b'"')))
+                | has_zero(x ^ (ONES * u64::from(b'\\')))
+                | (x.wrapping_sub(ONES * 0x20) & !x & HIGH);
+            if special != 0 {
+                // The lowest flagged byte is always a true match.
+                self.pos += special.trailing_zeros() as usize / 8;
+                return;
+            }
+            self.pos += 8;
+        }
+    }
+
     #[cold]
     fn escaped_string(&mut self, start: usize) -> Result<String, ParseError> {
-        let mut out = String::from_utf8_lossy(&self.src[start..self.pos]).into_owned();
+        let mut out = self.text[start..self.pos].to_owned();
         loop {
             let run = self.pos;
             while let Some(b) = self.peek() {
@@ -411,7 +438,7 @@ impl<'a, S: Sink> Parser<'a, S> {
                 }
                 self.pos += 1;
             }
-            out.push_str(std::str::from_utf8(&self.src[run..self.pos]).unwrap_or_default());
+            out.push_str(&self.text[run..self.pos]);
             match self.peek() {
                 None => return Err(self.error("unterminated string")),
                 Some(b'"') => {
