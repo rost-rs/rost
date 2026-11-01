@@ -1306,3 +1306,8 @@ fn test_untyped_values_keep_units() {
     }
     assert_eq!(rost::from_str::<Typed>("size: 140px\n").unwrap().size, 140.0);
 }
+
+#[test]
+fn test_json_escapes_decode() {
+    assert_eq!(rost::field::unescape(r"a\bb\fc\/d"), "a\u{8}b\u{c}c/d");
+}

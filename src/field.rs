@@ -268,7 +268,7 @@ pub fn parse_fast_f64(raw: &str) -> Option<f64> {
 
 /// Decodes backslash escapes in a quoted string value.
 ///
-/// Supported: `\n`, `\t`, `\r`, `\0`, `\"`, `\\`, `\/`, `\u{1F600}` (1–6 hex digits) and
+/// Supported: `\n`, `\t`, `\r`, `\0`, `\b`, `\f`, `\"`, `\\`, `\/`, `\u{1F600}` (1–6 hex digits) and
 /// JSON-style `\uXXXX` (including surrogate pairs). Unknown or malformed escapes are kept
 /// verbatim. Borrows when there is nothing to decode.
 ///
@@ -312,6 +312,8 @@ fn decode_escape(esc: &str) -> (Option<char>, usize) {
         Some(b't') => Some('\t'),
         Some(b'r') => Some('\r'),
         Some(b'0') => Some('\0'),
+        Some(b'b') => Some('\u{8}'),
+        Some(b'f') => Some('\u{c}'),
         Some(b'"') => Some('"'),
         Some(b'\\') => Some('\\'),
         Some(b'/') => Some('/'),
