@@ -113,6 +113,9 @@ pub use de::{from_block, from_template, DeError};
 /// The error type of serialization and deserialization, named like `serde_json::Error`.
 #[cfg(feature = "serde")]
 pub use de::DeError as Error;
+/// `Result` with [`Error`] as the default error, named like `serde_json::Result`.
+#[cfg(feature = "serde")]
+pub type Result<T, E = Error> = std::result::Result<T, E>;
 #[cfg(feature = "serde")]
 pub use ser::{to_string, to_string_pretty, to_vec, to_vec_pretty, to_writer, to_writer_pretty};
 #[cfg(feature = "serde")]
