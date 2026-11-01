@@ -26,6 +26,8 @@ pub enum ParseErrorKind {
     ExpectedKey,
     /// The same key is defined twice in one scope.
     DuplicateKey(String),
+    /// The input is not strict RFC 8259 JSON (see [`crate::json`]).
+    InvalidJson(&'static str),
 }
 
 impl fmt::Display for ParseErrorKind {
@@ -41,6 +43,7 @@ impl fmt::Display for ParseErrorKind {
             }
             Self::ExpectedKey => f.write_str("expected a key"),
             Self::DuplicateKey(key) => write!(f, "duplicate key `{key}` in the same scope"),
+            Self::InvalidJson(msg) => write!(f, "invalid JSON: {msg}"),
         }
     }
 }

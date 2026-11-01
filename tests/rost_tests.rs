@@ -1417,3 +1417,30 @@ fn test_typed_json_documents() {
     let err = rost::from_str::<Wrong>(r#"{"name": {"a": 1}}"#).unwrap_err().to_string();
     assert!(err.contains("expected a scalar value, found a block or a list"), "{err}");
 }
+
+#[cfg(feature = "serde")]
+#[test]
+fn test_strict_json_and_other_formats_convert_through_value() {
+    let json = r#"{"name": "app", "window": {"width": 800, "ratio": 1.5}, "tags": ["a", "b"], "on": true}"#;
+
+    // The strict template indexes the same object the lenient parser does.
+    let strict = Template::from_json(json).unwrap();
+    assert_eq!(strict.bytecode(), Template::parse(json).unwrap().bytecode());
+    let value: rost::Value = rost::from_template(&strict).unwrap();
+    assert_eq!(value, rost::json::from_str(json).unwrap());
+    assert_eq!(rost::from_str::<rost::Value>(json).unwrap(), value);
+
+    // JSON -> rost -> JSON keeps the tree.
+    let doc = rost::to_string(&value).unwrap();
+    let back: rost::Value = rost::from_str(&doc).unwrap();
+    assert_eq!(rost::json::to_string(&back), rost::json::to_string(&value));
+
+    // Any serde format lands in the same Value, so TOML converts too.
+    let toml_src = "name = \"app\"\ntags = [\"a\", \"b\"]\non = true\n\n[window]\nwidth = 800\nratio = 1.5\n";
+    let from_toml: rost::Value = toml::from_str(toml_src).unwrap();
+    for key in ["name", "window", "tags", "on"] {
+        assert_eq!(from_toml[key], value[key], "{key}");
+    }
+    let doc = rost::to_string(&from_toml).unwrap();
+    assert_eq!(rost::from_str::<rost::Value>(&doc).unwrap(), from_toml);
+}
