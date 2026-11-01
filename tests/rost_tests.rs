@@ -1130,3 +1130,29 @@ fn test_from_str_reports_positions() {
         "cannot parse 'port' as u16: 70000"
     );
 }
+
+#[test]
+fn test_list_scanning_skips_brackets_inside_strings() {
+    let src = "tags [\"a]b\", \"[\", c]\nafter: 1\n";
+    let t = Template::parse(src).unwrap();
+    assert_eq!(t.query_list("tags"), Some(vec!["a]b", "[", "c"]));
+    assert_eq!(t.get_value("after"), Some("1"));
+    assert_eq!(t.get("after").unwrap().line(), 2);
+
+    // An unpaired quote is a plain character, as before.
+    let t = Template::from_str("tags [a\"b]\nafter: 1\n");
+    assert_eq!(t.query_list("tags"), Some(vec!["a\"b"]));
+    assert_eq!(t.get_value("after"), Some("1"));
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn test_from_str_list_skips_brackets_inside_strings() {
+    #[derive(Debug, serde::Deserialize, PartialEq)]
+    struct Doc {
+        tags: Vec<String>,
+        after: u32,
+    }
+    let doc: Doc = rost::from_str("tags [\"a]b\", \"[\", c]\nafter: 1\n").unwrap();
+    assert_eq!(doc, Doc { tags: vec!["a]b".into(), "[".into(), "c".into()], after: 1 });
+}

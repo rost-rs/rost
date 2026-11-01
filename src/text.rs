@@ -16,7 +16,7 @@ use serde::de::{self, DeserializeSeed, Deserializer, IgnoredAny, MapAccess, Visi
 
 use crate::de::{DeError, FieldDeserializer, RawListDeserializer};
 use crate::field::QuoteStyle;
-use crate::parser::{find_unescaped_quote, find_value_end, trim_trailing_ws, IS_DELIM_OR_WS, RAW_QUOTE};
+use crate::parser::{find_list_end, find_unescaped_quote, find_value_end, trim_trailing_ws, IS_DELIM_OR_WS, RAW_QUOTE};
 
 /// Deserializes a `.rost` document from a string in a single pass.
 ///
@@ -304,22 +304,11 @@ impl<'de> Parser<'de> {
     /// Reads a list body after `[`, up to its matching `]`.
     fn read_list(&mut self) -> Result<&'de str, DeError> {
         let start = self.pos;
-        let mut depth = 1u32;
-        while let Some(b) = self.peek() {
-            self.pos += 1;
-            match b {
-                b'[' => depth += 1,
-                b']' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        return Ok(&self.src[start..self.pos - 1]);
-                    }
-                }
-                _ => {}
-            }
-        }
-        self.pos = start;
-        Err(self.error("unterminated list: missing closing `]`"))
+        let Some(end) = find_list_end(self.bytes, start) else {
+            return Err(self.error("unterminated list: missing closing `]`"));
+        };
+        self.pos = end + 1;
+        Ok(&self.src[start..end])
     }
 
     /// Reads an enum body after `|`, up to the closing `|`.
