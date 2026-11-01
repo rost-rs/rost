@@ -39,17 +39,39 @@ scripts/rost-init.sh my-demo --run
 ```
 
 The script checks `cargo` (Rust 1.85 or newer) and `git`, declares its dependencies (`rost` with the
-`derive` and `watch` features, and `ratatui` for the terminal UI), writes a small project and builds it.
-The app shows three themes, each in its own `.rost` file, loaded into typed Rust values:
+`derive` and `watch` features, `ratatui` for the terminal UI and `serde`), writes a small project and builds it.
 
-- edit `themes/dark.rost` in another terminal and the colors change on screen, no restart;
-- break a file on purpose: the last good value stays and the error shows its line and column;
-- press `t` to switch theme: the app patches `app.rost` (comments and layout intact) and the hot
-  reload picks it up like any other edit; a theme name that does not exist is rejected;
+In the generated app the Rust code only knows how to draw a few widget kinds. **The whole interface is
+described in `app.rost`**: the tree of containers and areas with their sizes, framed blocks, texts, lists, a
+gauge, the theme palette and the reload status, plus colors, borders, text templates (`{theme_name}`,
+`{uptime}`, `{size}`…) and the key bindings. Three themes live in `themes/*.rost`.
+
+```rust
+#[derive(Rost)]
+struct AppConfig {
+    title: String,
+    theme: String,
+    refresh: Duration,              // 100ms, 1.5s…
+    #[rost(serde)] themes: Vec<String>,
+    #[rost(serde)] keys: Vec<Binding>,
+    #[rost(serde)] layout: Node,    // the widget tree, recursive
+}
+```
+
+Edit the files in another terminal while the app runs:
+
+- change `size: 60%` to `30%`, add a `{ kind: text, … }` node, or set `border: double`: the screen follows every save;
+- break a file on purpose (`kind: widget`, `size: 60x`, `fg: salmon`, a typo in a key): the last good UI
+  stays and the error shows its line; rules between fields are checked too (unknown `{variable}`, a key that
+  toggles an id that does not exist, a theme that is not listed, a gauge outside 0 to 100);
+- press `t`, `1`, `2` or `3` to switch theme: the app patches `theme:` in `app.rost` (comments and layout
+  intact) and the hot reload picks it up like any other edit; `h` toggles the help panel;
+- rebind a key in the `keys` list of `app.rost` and the new key works at once;
 - `--set title=hello` or `DEMO_TITLE=hello` override `app.rost` without editing it.
 
 Outside a checkout the script uses the released tag from git; `ROST_PATH=/path/to/rost` forces a local copy.
-CI generates the demo and drives its terminal UI in a pseudo-terminal (`scripts/demo-test.py`).
+CI generates the demo and drives its terminal UI in a pseudo-terminal (`scripts/demo-test.py`, 24 checks on
+what reaches the screen).
 
 ## Quick Start
 
