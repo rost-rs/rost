@@ -1,6 +1,6 @@
 [package]
 name = "rost"
-version = "0.2.0-alpha.1"
+version = "0.2.0-alpha.2"
 edition = "2024"
 authors = ["The Rost Project Contributors"]
 description = "Blazing-fast zero-copy document parser, indexer, and malleable engine for the .rost format"
@@ -8,11 +8,24 @@ license = "MIT"
 repository = "https://github.com/rost-rs/rost"
 
 [dependencies]
+arc-swap = { version = "1", optional = true }
 memchr = "2.8.3"
+memmap2 = { version = "0.9", optional = true }
+notify = { version = "8", optional = true }
+regex = { version = "1", optional = true }
+rost-derive = { path = "rost-derive", optional = true }
 serde = { version = "1.0.229", features = ["derive"], optional = true }
 
 [features]
 serde = ["dep:serde"]
+# `Template::mmap_rostc`: load precompiled documents straight from a memory map.
+mmap = ["dep:memmap2"]
+# `#[derive(Rost)]` and `rost::load`: generated loaders that skip serde's visitor protocol.
+derive = ["serde", "dep:rost-derive"]
+# `Reloader<T>`: typed live values driven by filesystem events.
+watch = ["dep:notify", "dep:arc-swap"]
+# `#[rost(regex = "…")]` validation.
+regex = ["dep:regex"]
 
 [dev-dependencies]
 serde = { version = "1.0.229", features = ["derive"] }
@@ -34,6 +47,10 @@ lto = "fat"
 name = "corpus"
 harness = false
 required-features = ["serde"]
+
+[[example]]
+name = "live_theme"
+required-features = ["derive", "watch"]
 
 [[bench]]
 name = "gate"

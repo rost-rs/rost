@@ -52,6 +52,16 @@ pub(crate) struct PathIndex {
     /// Entries whose hash collided with a different path (practically always empty).
     block_overflow: Vec<(u64, Chain)>,
     root_overflow: Vec<(u64, u32)>,
+    /// Blocks by name, built on the first [`PathIndex::find_block`].
+    names: std::sync::OnceLock<NameIndex>,
+}
+
+/// Blocks grouped by the hash of their own name, in document order.
+#[derive(Debug, Clone, Default)]
+struct NameIndex {
+    chains: PreHashedMap<Chain>,
+    /// Next block with the same name hash, parallel to `PathIndex::blocks`.
+    next: Vec<u32>,
 }
 
 impl PathIndex {
@@ -82,7 +92,7 @@ impl PathIndex {
                         index.blocks[id as usize].end = idx as u32;
                     }
                 }
-                parser::TAG_COMMON_TEXT if stack.is_empty() => {
+                parser::TAG_COMMON_TEXT | parser::TAG_LIST | parser::TAG_ENUM if stack.is_empty() => {
                     let key = resolve_slice(data, fields, idx + 1);
                     index.insert_root_key(data, fields, finish(mix_segment(SEED, key.as_bytes())), idx as u32);
                 }
@@ -132,7 +142,8 @@ impl PathIndex {
         }
     }
 
-    /// Returns the bytecode index of the property addressed by `path` (without a leading `#`).
+    /// Returns the bytecode index of the property, list or enum addressed by `path`
+    /// (without a leading `#`). The first definition of a key wins, whatever its kind.
     pub(crate) fn get(&self, data: &[u8], fields: &[u8], path: &str) -> Option<usize> {
         let Some((block_path, key)) = path.rsplit_once('.') else {
             let hash = finish(mix_segment(SEED, path.as_bytes()));
@@ -163,28 +174,81 @@ impl PathIndex {
         None
     }
 
+    /// Resolves a block selector to the bytecode index of its record.
+    ///
+    /// A selector matches a block by its name (`#button.primary`, `avatar`) or as
+    /// `parent.child` for a block directly inside a block of that name. When several
+    /// blocks match, the one whose closing brace comes first wins, as in a scan of the
+    /// document. Costs O(candidates with that name) after the first call.
+    pub(crate) fn find_block(&self, data: &[u8], fields: &[u8], selector: &str) -> Option<usize> {
+        let clean = block_name(selector);
+        let names = self.names.get_or_init(|| {
+            let mut index = NameIndex { chains: PreHashedMap::default(), next: vec![NONE; self.blocks.len()] };
+            for id in 0..self.blocks.len() as u32 {
+                let hash = finish(mix_segment(SEED, block_name_of(&self.blocks, data, fields, id).as_bytes()));
+                match index.chains.entry(hash) {
+                    Entry::Vacant(slot) => {
+                        slot.insert(Chain { first: id, last: id });
+                    }
+                    Entry::Occupied(mut slot) => {
+                        index.next[slot.get().last as usize] = id;
+                        slot.get_mut().last = id;
+                    }
+                }
+            }
+            index
+        });
+        // (end, start) of the best candidate so far; a smaller end wins, then a later start.
+        let mut best: Option<(u32, u32)> = None;
+        let mut consider = |child: &str, parent: Option<&str>| {
+            let hash = finish(mix_segment(SEED, child.as_bytes()));
+            let mut id = names.chains.get(&hash).map_or(NONE, |c| c.first);
+            while id != NONE {
+                let b = self.blocks[id as usize];
+                if let Some((best_end, _)) = best
+                    && b.rec > best_end
+                {
+                    // Blocks starting after the best one has closed cannot close before it.
+                    break;
+                }
+                let matches = block_name_of(&self.blocks, data, fields, id) == child
+                    && parent.is_none_or(|p| {
+                        b.parent != NONE && block_name_of(&self.blocks, data, fields, b.parent) == p
+                    });
+                if matches && best.is_none_or(|(end, start)| (b.end, std::cmp::Reverse(b.rec)) < (end, std::cmp::Reverse(start))) {
+                    best = Some((b.end, b.rec));
+                }
+                id = names.next[id as usize];
+            }
+        };
+        consider(clean, None);
+        for (dot, _) in clean.match_indices('.') {
+            consider(&clean[dot + 1..], Some(&clean[..dot]));
+        }
+        best.map(|(_, rec)| rec as usize)
+    }
+
     /// Scans the direct property children of `block` for `key`, skipping nested blocks.
     fn find_child(&self, data: &[u8], fields: &[u8], block: u32, key: &str) -> Option<usize> {
         let b = self.blocks[block as usize];
-        let mut idx = b.rec as usize + parser::REC_NAMED;
+        let mut idx = b.rec as usize + parser::REC_BLOCK_START;
         let end = b.end as usize;
         while idx < end {
             let tag = fields[idx];
             match tag {
-                parser::TAG_COMMON_TEXT => {
+                parser::TAG_COMMON_TEXT | parser::TAG_LIST | parser::TAG_ENUM => {
                     if resolve_slice(data, fields, idx + 1) == key {
                         return Some(idx);
                     }
                 }
                 parser::TAG_BLOCK_START => {
-                    // Blocks are stored in document order, so the nested block is found by
-                    // binary search and skipped as a whole.
-                    let nested = self.blocks.partition_point(|n| (n.rec as usize) < idx);
-                    idx = self.blocks[nested].end as usize;
+                    // The record knows where its block ends: skip the nested block as a whole.
+                    idx = crate::block::Block::new(data, fields, idx).after();
+                    continue;
                 }
                 _ => {}
             }
-            idx += parser::record_len(fields.get(idx).copied().unwrap_or(0));
+            idx += parser::record_len(tag);
         }
         None
     }

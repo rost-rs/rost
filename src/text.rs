@@ -47,11 +47,17 @@ use crate::parser::{find_list_end, root_braces, KEY_END, find_unescaped_quote, f
 /// assert_eq!((config.window.width, config.window.scale), (1280, 1.25));
 /// ```
 pub fn from_str<'de, T: de::Deserialize<'de>>(src: &'de str) -> Result<T, DeError> {
+    from_str_seed(src, std::marker::PhantomData::<T>)
+}
+
+/// [`from_str`] for a [`DeserializeSeed`], which can carry state into the deserialization.
+#[inline]
+pub(crate) fn from_str_seed<'de, S: DeserializeSeed<'de>>(src: &'de str, seed: S) -> Result<S::Value, DeError> {
     let mut parser = Parser { src, bytes: src.as_bytes(), pos: 0, locate: true };
     let value = match parser.bytes.get(skip_trivia(parser.bytes, 0)) {
         // JSON-shaped documents take their own path, so plain `.rost` roots stay lean.
-        Some(b'{' | b'[') => deserialize_wrapped(&mut parser)?,
-        _ => T::deserialize(Root { p: &mut parser })?,
+        Some(b'{' | b'[') => deserialize_wrapped(&mut parser, seed)?,
+        _ => seed.deserialize(Root { p: &mut parser })?,
     };
     parser.skip_trivia();
     if parser.pos < parser.bytes.len() {
@@ -63,21 +69,21 @@ pub fn from_str<'de, T: de::Deserialize<'de>>(src: &'de str) -> Result<T, DeErro
 /// Deserializes a document that starts with `{` (a JSON object, read as its contents) or
 /// `[` (a top-level list, as JSON arrays are).
 #[inline(never)]
-fn deserialize_wrapped<'de, T: de::Deserialize<'de>>(parser: &mut Parser<'de>) -> Result<T, DeError> {
+fn deserialize_wrapped<'de, S: DeserializeSeed<'de>>(parser: &mut Parser<'de>, seed: S) -> Result<S::Value, DeError> {
     parser.skip_trivia();
     if parser.peek() == Some(b'[') {
         parser.pos += 1;
-        return T::deserialize(List { p: parser });
+        return seed.deserialize(List { p: parser });
     }
     let Some((start, end)) = root_braces(&parser.bytes[parser.pos..]).map(|(s, e)| (parser.pos + s, parser.pos + e))
     else {
         // No closing brace at the end: not a wrapped document, so report it as `.rost`.
-        return T::deserialize(Root { p: parser });
+        return seed.deserialize(Root { p: parser });
     };
     // Truncating at the closing brace keeps positions absolute, and matches where the
     // bytecode parser ends the document.
     let mut body = Parser { src: &parser.src[..end], bytes: &parser.bytes[..end], pos: start, locate: parser.locate };
-    let value = T::deserialize(Root { p: &mut body })?;
+    let value = seed.deserialize(Root { p: &mut body })?;
     parser.pos = end + 1;
     Ok(value)
 }
@@ -86,7 +92,7 @@ fn deserialize_wrapped<'de, T: de::Deserialize<'de>>(parser: &mut Parser<'de>) -
 ///
 /// The bytes must be valid UTF-8; see [`from_str`].
 pub fn from_slice<'de, T: de::Deserialize<'de>>(bytes: &'de [u8]) -> Result<T, DeError> {
-    let src = std::str::from_utf8(bytes).map_err(|e| DeError(format!("invalid UTF-8: {e}")))?;
+    let src = std::str::from_utf8(bytes).map_err(|e| DeError::new(format!("invalid UTF-8: {e}")))?;
     from_str(src)
 }
 
@@ -109,9 +115,12 @@ pub fn from_slice<'de, T: de::Deserialize<'de>>(bytes: &'de [u8]) -> Result<T, D
 /// ```
 pub fn from_reader<R: std::io::Read, T: de::DeserializeOwned>(mut reader: R) -> Result<T, DeError> {
     let mut src = String::new();
-    reader.read_to_string(&mut src).map_err(|e| DeError(format!("I/O error: {e}")))?;
+    reader.read_to_string(&mut src).map_err(|e| DeError::new(format!("I/O error: {e}")))?;
     from_str(&src)
 }
+
+mod fast;
+pub use fast::{load, load_file, Fast, Field, Load, Mark};
 
 /// Byte classes skipped between entries: whitespace, separators.
 const TRIVIA: [bool; 256] = {
@@ -220,14 +229,14 @@ impl<'de> Parser<'de> {
     #[cold]
     fn error(&self, msg: &str) -> DeError {
         if !self.locate {
-            return DeError(msg.to_string());
+            return DeError::new(msg.to_string());
         }
         let at = self.pos.min(self.bytes.len());
         let before = &self.bytes[..at];
         let line = memchr::Memchr::new(b'\n', before).count() + 1;
         let line_start = memchr::memrchr(b'\n', before).map_or(0, |p| p + 1);
         let column = self.src[line_start..at].chars().count() + 1;
-        DeError(format!("{line}:{column}: {msg}"))
+        DeError::new(format!("{line}:{column}: {msg}"))
     }
 
     #[inline(always)]
@@ -645,7 +654,7 @@ impl<'de> MapAccess<'de> for Entries<'_, 'de> {
                 let first = body.split(',').next().unwrap_or("").trim();
                 seed.deserialize(BorrowedStrDeserializer::new(first))
             }
-            None => Err(DeError("next_value called before next_key".into())),
+            None => Err(DeError::new("next_value called before next_key")),
         }
     }
 }
@@ -966,5 +975,78 @@ impl<'de> Deserializer<'de> for Scalar<'_, 'de> {
     serde::forward_to_deserialize_any! {
         i128 u128 char bytes byte_buf unit unit_struct newtype_struct seq tuple
         tuple_struct map struct identifier ignored_any
+    }
+}
+
+/// Where an entry's value sits in the source (see [`scan_entries`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Span {
+    /// A scalar: the byte range of its text, quotes included.
+    Scalar { start: usize, end: usize },
+    /// A block: the byte offset of its closing `}`.
+    Block { close: usize },
+}
+
+/// An entry's dotted path and where its value sits.
+pub(crate) type Located = (Vec<String>, Span);
+
+/// Lists every scalar and block of a `.rost` document with its dotted path and byte span,
+/// so a value can be replaced in the text without disturbing the rest of the file.
+/// `None` for a document wrapped in `{ … }` (JSON style).
+pub(crate) fn scan_entries(src: &str) -> Result<Option<Vec<Located>>, DeError> {
+    let mut parser = Parser { src, bytes: src.as_bytes(), pos: 0, locate: true };
+    parser.skip_trivia();
+    if parser.peek() == Some(b'{') || parser.peek() == Some(b'[') {
+        return Ok(None);
+    }
+    let mut out = Vec::new();
+    scan_block(&mut parser, true, &mut Vec::new(), &mut out)?;
+    Ok(Some(out))
+}
+
+fn scan_block(p: &mut Parser<'_>, root: bool, path: &mut Vec<String>, out: &mut Vec<Located>) -> Result<(), DeError> {
+    let mut entries = Entries { p, root, key: "", pending: None };
+    loop {
+        let key = match entries.next_entry() {
+            Ok(Some(key)) => key.to_string(),
+            Ok(None) => return Ok(()),
+            Err(Detour::EscapedKey(key)) => unescape(key).into_owned(),
+            Err(Detour::Error(e)) => return Err(e),
+        };
+        path.push(key);
+        let mut done = false;
+        match entries.pending {
+            Some(Pending::Block) => {
+                entries.pending = None;
+                scan_block(&mut *entries.p, false, path, out)?;
+                out.push((path.clone(), Span::Block { close: entries.p.pos - 1 }));
+                done = true;
+            }
+            Some(Pending::Scalar) => {
+                let at = skip_inline_ws(entries.p.bytes, entries.p.pos);
+                match entries.p.bytes.get(at) {
+                    Some(b'{') => {
+                        entries.pending = None;
+                        entries.p.pos = at + 1;
+                        scan_block(&mut *entries.p, false, path, out)?;
+                        out.push((path.clone(), Span::Block { close: entries.p.pos - 1 }));
+                        done = true;
+                    }
+                    Some(b'[') => {}
+                    _ => {
+                        let (value, quote) = entries.p.read_scalar()?;
+                        entries.pending = None;
+                        let end = if quote == QuoteStyle::Bare { at + value.len() } else { entries.p.pos };
+                        out.push((path.clone(), Span::Scalar { start: at, end }));
+                        done = true;
+                    }
+                }
+            }
+            _ => {}
+        }
+        if !done {
+            entries.next_value::<IgnoredAny>()?;
+        }
+        path.pop();
     }
 }

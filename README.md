@@ -31,13 +31,33 @@ The **`.rost`** declarative specification format bridges the gap between human-r
 
 ---
 
+## Try it in one minute
+
+```sh
+git clone https://github.com/rost-rs/rost.git && cd rost
+scripts/rost-init.sh my-demo --run
+```
+
+The script checks `cargo` (Rust 1.85 or newer) and `git`, declares its dependencies (`rost` with the
+`derive` and `watch` features, and `ratatui` for the terminal UI), writes a small project and builds it.
+The app shows three themes, each in its own `.rost` file, loaded into typed Rust values:
+
+- edit `themes/dark.rost` in another terminal and the colors change on screen, no restart;
+- break a file on purpose: the last good value stays and the error shows its line and column;
+- press `t` to switch theme: the app patches `app.rost` (comments and layout intact) and the hot
+  reload picks it up like any other edit; a theme name that does not exist is rejected;
+- `--set title=hello` or `DEMO_TITLE=hello` override `app.rost` without editing it.
+
+Outside a checkout the script uses the released tag from git; `ROST_PATH=/path/to/rost` forces a local copy.
+CI generates the demo and drives its terminal UI in a pseudo-terminal (`scripts/demo-test.py`).
+
 ## Quick Start
 
 Add `rost` to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-rost = { git = "https://github.com/rost-rs/rost.git", tag = "v0.2.0-alpha.1" }
+rost = { git = "https://github.com/rost-rs/rost.git", tag = "v0.2.0-alpha.2" }
 ```
 
 ### 1. Document Parsing & Querying
@@ -241,7 +261,129 @@ let document = RostBuilder::new()
 assert!(document.contains("@theme \"cyberpunk\""));
 ```
 
+### 8. Precompiled Documents, Block Trees and Borrowed Trees
+
+```rust
+use rost::{doc::Doc, Template};
+
+let doc = Template::parse("#window { width: 800\n  #title { text: \"Hi\" } }")?;
+
+// Blocks know their parent, children and siblings: navigation never scans or allocates.
+let window = doc.block("window").unwrap();
+for child in window.children() {
+    println!("{} → {:?}", child.name(), child.get("text").map(|f| f.value()));
+}
+
+// Save the document with its bytecode; loading it again skips parsing.
+doc.save_rostc("window.rostc")?;
+let doc = Template::load_rostc("window.rostc")?;
+for item in doc.query_list_iter("inventory.items").into_iter().flatten() {
+    println!("{item}"); // borrowed from the document, no allocation
+}
+
+// A whole JSON or .rost document as one flat tape: ~4x faster to build than `Value`.
+let text = r#"{"name": "rost", "tags": ["fast", "small"]}"#;
+let tape = Doc::from_json(text)?;
+assert_eq!(tape.root().get("name").and_then(|v| v.as_str()), Some("rost"));
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+A `.rostc` file is validated on load (magic, format version, checksum, UTF-8, every offset
+and block link of the bytecode), so a damaged or hostile file is an error, never a panic or
+an invalid `&str`. With the `mmap` feature, `unsafe Template::mmap_rostc` uses the file in
+place instead of copying it. Documents over 4 GiB are rejected: the bytecode uses `u32` offsets.
+
+### 9. Generated Loaders (`derive`)
+
+```rust
+use rost::Rost;
+
+#[derive(Rost)]
+struct Window {
+    width: u32,
+    #[rost(rename = "title")]
+    caption: String,
+}
+
+#[derive(Rost)]
+struct Config {
+    debug: bool,
+    window: Window,
+    #[rost(serde)] // any field type that implements serde's `Deserialize`
+    tags: Vec<String>,
+    note: Option<String>,
+}
+
+let config: Config = rost::load("debug: true\ntags [a, b]\n#window { width: 1280, title: \"Hi\" }")?;
+# Ok::<(), rost::de::DeError>(())
+```
+
+With the `derive` feature, `#[derive(Rost)]` writes the loop that reads a struct's entries, so
+`rost::load` skips serde's visitor layer. Whatever the generated code does not recognise falls back
+to the serde reader, so `rost::load` and `rost::from_str` return the same value for every document.
+
 ---
+
+### 10. Live reload (`watch` feature)
+
+```rust
+use rost::{Reloader, Rost};
+
+#[derive(Rost)]
+struct Theme { title: String, width: u32 }
+
+let theme = Reloader::<Theme>::watch_load("theme.rost")?;   // fails if the file is invalid
+theme.on_error(|e| eprintln!("rejected: {e}"));             // "theme.rost:3:9: cannot parse …"
+theme.on_change_path("width", |c| println!("{:?} -> {:?}", c.old, c.new));
+
+loop {
+    let t = theme.get();   // lock-free snapshot; never a half-written value
+    // draw(&t) …
+}
+```
+
+A broken edit never reaches the program: the previous value stays and the error carries the
+file, line and column. Saves by rename, bursts of writes and rewrites with identical content
+are handled. Measured end to end (write → new value visible): median **21 ms**, of which 20 ms
+is the debounce. 1000 files saved three times each all end on their last write.
+
+### 11. Typed configuration (`derive` feature)
+
+```rust
+use rost::{types::{Color, Duration}, Describe, Rost};
+
+#[derive(Rost, Describe)]
+#[rost(rename_all = "kebab-case")]
+enum Mode { DarkTheme, LightTheme }
+
+#[derive(Rost, Describe)]
+struct Window {
+    /// Width in pixels.
+    #[rost(range(min = 100, max = 4096))]
+    width: u32,
+    #[rost(one_of("main", "tool"), default)]
+    kind: String,
+}
+
+#[derive(Rost, Describe)]
+struct Config { mode: Mode, window: Window, accent: Color, timeout: Duration }
+
+let config: Config = rost::load_file("app.rost")?;
+// app.rost:3:3: field `window.width`: 5000 is out of range: expected 100 to 4096
+```
+
+- **Attributes:** `rename`, `rename_all`, `default`/`optional`, `serde`, `flatten`, `range(min, max)`,
+  `one_of(...)` and `regex = "..."` (feature `regex`). Errors carry file, line, column and the field path.
+- **Types:** unit enums, newtype structs and `Color`, `Dimension`, `Duration`, `Percentage`, `Path`
+  (`rost::types`) are read natively. Enums with data and tuple structs read through serde (derive
+  `Deserialize` as well).
+- **Overrides:** `Overrides::from_env("APP")` (`APP_WINDOW__WIDTH=800`), `Overrides::from_args(args)`
+  (`--set window.width=800`) and `rost::load_with(text, &overrides)` replace values in the text without
+  touching comments or layout; a value an override made invalid is reported as the override.
+- **Schema:** `Config::describe().to_json_schema()` for editor autocompletion and validation,
+  `.to_rost_schema()` for a readable `.rost` schema; `///` docs become descriptions.
+- **Live:** `Reloader::<Config>::watch_load(path)` validates before it swaps, and
+  `.validate(|c| ...)` adds cross-field rules; a failing edit leaves the running value alone.
 
 ## Testing & Benchmarks
 
@@ -266,19 +408,20 @@ timings include copying the input, since it parses in place:
 
 | Workload | Contender | Median |
 |---|---|---|
-| 5 MB document → `HashMap<String, Item>` | **`rost::from_str`** (.rost text) | 11.2–11.3 ms |
-| | **`rost::from_str`** reading the JSON text itself | 11.2–11.5 ms |
-| | `serde_json`, one record per line (5.3 MB) | 10.5–10.6 ms |
-| | `serde_json`, pretty-printed like the rost file (7.7 MB) | 11.5–11.7 ms |
-| | `sonic-rs` / `simd-json` | 10.7–10.9 ms / 11.6–11.7 ms |
+| 5 MB document → `HashMap<String, Item>` | **`rost::load`** (`#[derive(Rost)]`), compact layout / multi-line | **10.3–10.7 ms** / 10.95–11.4 ms |
+| | **`rost::from_str`**, compact layout / multi-line | 11.3–11.6 ms / 11.6–12.1 ms |
+| | **`rost::from_str`** reading the JSON text itself | 12.1–12.2 ms |
+| | `serde_json`, one record per line (5.3 MB) | 10.95–11.3 ms |
+| | `sonic-rs` / `simd-json` | 11.2–11.8 ms / 12.1–12.6 ms |
 | | `toml` | 66–76 ms |
-| Small config → struct | **`rost::from_str`** | 125–127 ns |
-| | `serde_json` compact / pretty | 145–155 ns / 167–169 ns |
-| | `sonic-rs` / `simd-json` | 151–155 ns / 272–310 ns |
+| Small config → struct | **`rost::from_str`** | 125–152 ns |
+| | `serde_json` compact / pretty | 144–155 ns / 167–189 ns |
+| | `sonic-rs` / `simd-json` | 151–160 ns / 272–310 ns |
 | | `toml` | 1.1 µs |
 | 5 MB document → dynamic tree | **`rost::Value`** / **`rost::json::from_str`** | 21.0 ms / 18.5–18.9 ms |
+| | **`Doc::from_json`** / **`Doc::from_rost`** (borrowed flat tape) | 5.1 ms / 8.1–8.4 ms |
 | | `serde_json::Value` | 25–27 ms |
-| | `sonic_rs::Value` (arena-backed DOM) | 4.6–4.8 ms |
+| | `sonic_rs::Value` (arena-backed DOM) | 4.8 ms |
 | | `simd_json::OwnedValue` | 22–23 ms |
 | Serialize the 50k-record map | **`rost::to_string`** / **`to_string_pretty`** | 3.8 ms / 3.6–3.7 ms |
 | | `serde_json::to_string` / `to_string_pretty` | 3.5 ms / 5.3 ms |
@@ -288,22 +431,24 @@ timings include copying the input, since it parses in place:
 | Validate 5.3 MB of JSON | **`rost::json::validate`** | 3.9 ms |
 | | `serde_json` / `sonic-rs` (`IgnoredAny`) | 3.3–3.5 ms / 5.3–5.5 ms |
 | Load a queryable document | **rost lenient index** / strict (validated) | 4.4–4.6 ms / 5.2–5.5 ms |
+| | **`Template::from_rostc`** (precompiled: checksum + validation, no parsing) / **`mmap_rostc`** | 4.1 ms / 3.6–3.8 ms |
 | | **`Template::from_json`** (strict JSON, validated + indexed) | 9.6–10.1 ms |
 | Lookup by dot path | **rost `query_raw_value`** (after one index build) | 40 ns |
 | | `serde_json` `Value` indexing (after the DOM build) | 60–67 ns |
 
 Real-world JSON (serde-rs/json-benchmark files, same machine, medians):
 
-| File | `json::validate` | `serde_json` validate | rost lenient index | `json::from_str` → `Value` | `serde_json::Value` | `sonic_rs::Value` |
-|---|---|---|---|---|---|---|
-| canada (2.2 MB, numbers) | 2.1–2.3 ms | 1.3 ms | **0.9 ms** | 6.4–6.5 ms | 6.6–6.8 ms | 1.8 ms |
-| citm_catalog (1.7 MB) | **0.9 ms** | 0.9 ms | **0.6 ms** | **2.1 ms** | 2.3 ms | 0.9 ms |
-| twitter (0.6 MB, strings) | 0.3 ms | 0.25 ms | 0.27 ms | 1.36 ms | 1.30 ms | 0.43 ms |
+| File | `json::validate` | `serde_json` validate | rost lenient index | `json::from_str` → `Value` | `Doc::from_json` | `serde_json::Value` | `sonic_rs::Value` |
+|---|---|---|---|---|---|---|---|
+| canada (2.2 MB, numbers) | 2.1–2.8 ms | 1.3 ms | **0.9 ms** | 6.4–7.0 ms | 3.1 ms | 6.6–7.0 ms | 1.8–2.0 ms |
+| citm_catalog (1.7 MB) | **0.9 ms** | 0.9 ms | **0.6 ms** | 2.1–2.2 ms | 1.14 ms | 2.3–2.5 ms | 0.96 ms |
+| twitter (0.6 MB, strings) | 0.3 ms | 0.25 ms | 0.27 ms | 1.36–1.43 ms | **0.40 ms** | 1.30–1.38 ms | 0.45 ms |
 
-Small configs load ~1.2× faster than `serde_json` and write ~2× faster; typed loading of
-large documents is on par (within ~7%) with `serde_json` and `sonic-rs`; the dynamic tree
-beats `serde_json::Value` and `simd-json`, while `sonic-rs`'s arena DOM is ~4× ahead of
-every owned tree. Indexing a JSON file for queries is faster than `serde_json` merely
+Small configs load on par with `serde_json` (125–152 ns vs 144–155 ns, depending on the state of the machine) and write ~2× faster; typed loading of
+large documents with `#[derive(Rost)]` is 4–7% ahead of `serde_json` on the compact layout and level on the multi-line one, and `rost::from_str` is within ~7% of it; the dynamic tree
+beats `serde_json::Value` and `simd-json`, and `Doc`, the borrowed flat tape, builds in
+1.06× the time of `sonic-rs`'s arena DOM on the 5 MB document (ahead of it on twitter; 1.5× behind on
+number-heavy canada). Indexing a JSON file for queries is faster than `serde_json` merely
 validating it. rost files are ~30% smaller than equivalent pretty JSON.
 
 ---

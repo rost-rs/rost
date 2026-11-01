@@ -3,6 +3,71 @@
 All notable changes per release checkpoint. Checkpoints are defined in
 [`SPRINTS.md`](SPRINTS.md#release-checkpoints). Versions below `1.0.0` may break the API.
 
+## 0.2.0-alpha.2 — 2026-11-01
+
+Second downloadable checkpoint (Sprints 6–8): indexed structure, `.rostc`, `Doc`, generated loaders, live reload and typed
+configuration. Tag: `v0.2.0-alpha.2`. Try it with `scripts/rost-init.sh`.
+
+### Added (Sprint 8)
+- `scripts/rost-init.sh`: builds a themed terminal app (three themes, live edits, rejected edits, `t` patching
+  `app.rost`); `scripts/demo-test.py` drives it in a pseudo-terminal and runs in CI.
+- `Overrides::merge`.
+- `#[derive(Rost)]` for unit enums, newtype structs (and, through serde, data enums and tuple
+  structs); `rename_all`; field attributes `optional`, `flatten`, `range`, `one_of`, `regex`.
+- `rost::validate`, with errors at the line and column of the key and the field path.
+- `rost::types::{Color, Dimension, Duration, Percentage, Path}`.
+- `#[derive(Describe)]`, `TypeDesc::{to_json_schema, to_rost_schema}`.
+- `rost::{load_file, Overrides, load_with, load_file_with}`: environment and command-line overrides.
+- `ReloaderBuilder::validate`, `Reloader::watch_load_with`.
+- Feature `regex`.
+
+### Changed (Sprint 8)
+- Typed-loader errors read `L:C: field `path`: message`; a missing field is `field `x`: missing`.
+
+
+### Added (Sprint 7, feature `watch`)
+- `rost::Reloader<T>`: a typed value that follows its file. Lock-free `get()`, atomic swap,
+  the last good value stays when an edit is invalid (`last_error()`, `on_error`), `on_change`,
+  `on_change_path("window.width", …)`, `depends_on(file)`, `wait_for_version`. Entry points
+  `watch`, `watch_serde`, `watch_load` (`#[derive(Rost)]`), `builder`.
+- One shared dispatcher thread fed by `notify` file events, debounced (20 ms), with a stat poll
+  as safety net; editors that save by rename work; identical content is not reloaded.
+- `rost::diff::{diff, Change}`: structural diff between two `Value` trees, as dotted paths.
+- `examples/live_theme.rs`.
+
+### Fixed (Sprint 7)
+- Typed loaders (`rost::load`, `#[derive(Rost)]`) now report `line:column` on value errors
+  (`cannot parse 'height' as u32` had no position).
+
+
+### Added
+- `rost::doc::{Doc, ValueRef}`: a borrowed document tree on a flat tape. `Doc::from_json`,
+  `Doc::from_rost`; navigation by `get`, `at`, `iter`, `entries`; `to_value` for the owned `Value`.
+- Block tree in the bytecode: `Block`, `Template::{block, root_blocks, block_path}`,
+  `Block::{parent, first_child, next_sibling, children, fields, get, child, descend}`.
+- `.rostc` precompiled documents: `Template::{to_rostc, from_rostc, save_rostc, load_rostc}` with a
+  magic, a format version byte, a checksum and structural validation of untrusted files; and
+  `unsafe Template::mmap_rostc` behind the `mmap` feature.
+- `Template::query_list_iter` / `query_enum_iter` return an allocation-free `Items` iterator.
+- `#[derive(Rost)]` (crate `rost-derive`, feature `derive`) and `rost::load`: generated loaders that skip
+  serde's visitor protocol and fall back to it for anything unusual, so they agree with `rost::from_str`
+  on every document. Attributes `rename`, `default`, `serde`. On the compact layout: 4% faster than
+  `serde_json`, 7% faster than `rost::from_str` (50k records).
+- `ParseErrorKind::TooLarge` and `parser::MAX_DOCUMENT_LEN`; `DeError::{new, message}`.
+
+### Changed
+- `query_list`, `query_enum`, `query_field` and `find_block` use the path index: O(depth) instead of
+  rebuilding every block per call. `find_block` copies only the fields of the block it finds.
+- Block-start records are 29 bytes (were 13): the lenient index executes 2.1% more instructions on a
+  block-heavy document.
+- The perf gate (`scripts/perf-gate.sh`) counts instructions under valgrind, threshold 3%.
+- **Breaking:** `DeError`'s field is no longer public (`DeError::new`, `DeError::message`). The error is
+  one pointer wide, which makes the typed loaders 6-8% faster in cycles on large documents.
+
+### Fixed
+- Documents over 4 GiB were silently indexed with wrapped `u32` offsets; they are now rejected.
+- `scripts/perf-gate.sh` could run a stale `gate-*` binary, and reported timing noise as regressions.
+
 ## 0.2.0-alpha.1 — 2026-11-01
 
 First downloadable checkpoint (Sprints 1–5). Tag: `v0.2.0-alpha.1`.

@@ -1,15 +1,25 @@
 # SPRINTS
 
-Development plan to turn `rost` into **the ultra-fast JSON and CSS for Rust**.
+Development plan to turn `rost` into **the template and configuration language for Rust
+applications that change while they run**, and a JSON-style data structure on the same engine.
 
 ## North star
 
-1. **Speed + Rust compatibility as the hook.** `rost` must be the fastest way to load
-   configuration, data and styles into Rust types — and prove it with public benchmarks.
-2. **Structure data and program declaratively with near-zero complexity.** Typed schemas,
-   derives, transactions and reactive state that feel like idiomatic Rust.
-3. **Save developer time.** One format and one crate replace `serde_json` + `toml` +
-   ad-hoc CSS parsers + hand-written state plumbing.
+**One audience:** Rust applications (tools, TUIs, GUIs, games, servers) that load configuration,
+templates and themes from files people edit while the program is running.
+
+1. **Hot reload is the product.** Edit a file, the running program has the new typed value in
+   milliseconds; a broken edit never breaks the program (the last good value stays) and the error
+   points at the exact line. No other crate gives this out of the box.
+2. **Templates and configuration in one language.** Variables, imports, reusable templates and
+   profiles resolved at load time, with no eval and no scripting engine.
+3. **Typed with no ceremony.** `#[derive(Rost)]` and one call. Also usable as a JSON-style data
+   structure (`Doc`, `Value`) on the same engine.
+4. **Speed is a requirement, not the hook.** Stay level with or ahead of `serde_json` / `toml`
+   (guarded by the CI perf gate), never trade the above for it.
+
+Not the audience for now: CSS engines, API-contract codegen and UI-framework adapters.
+They are kept under *Later*, after `0.2`.
 
 ## Working agreement
 
@@ -23,16 +33,16 @@ Development plan to turn `rost` into **the ultra-fast JSON and CSS for Rust**.
 ## Release checkpoints
 
 Pre-release versions are cut from `main` so a given state can be downloaded and pinned
-(`rost = { git = "https://github.com/rost-rs/rost.git", tag = "v0.2.0-alpha.1" }`).
+(`rost = { git = "https://github.com/rost-rs/rost.git", tag = "v0.2.0-alpha.2" }`).
 Nothing is published to crates.io until `0.2.0` (Sprint 12).
 
 | Checkpoint | Version | Reached when | Status |
 |---|---|---|---|
 | Alpha 1 | `0.2.0-alpha.1` | Sprint 5 merged: fast core, serde, JSON superset and strict JSON API, CI perf gate | **released** (2026-11-01) |
-| Alpha 2 | `0.2.0-alpha.2` | Sprint 7 merged: indexed structure, `.rostc`, `#[derive(Rost)]` and validation | pending |
-| Beta 1 | `0.2.0-beta.1` | Sprint 9 merged: CSS core and UI adapters (API may still change, features complete for styling) | pending |
-| Beta 2 | `0.2.0-beta.2` | Sprint 11 merged: state, transactions, declarative bindings and API contracts | pending |
-| RC / Release | `0.2.0-rc.1` → `0.2.0` | Sprint 12 merged: CLI, spec, docs; published on crates.io | pending |
+| Alpha 2 | `0.2.0-alpha.2` | Sprint 8 merged: perfect hot reload and typed configuration (`derive`, validation, spans) | **released** (2026-11-01) |
+| Beta 1 | `0.2.0-beta.1` | Sprint 10 merged: templates, imports, profiles and author tooling (CLI, editor grammar) | pending |
+| Beta 2 | `0.2.0-beta.2` | Sprint 11 merged: live state, transactions and write-back preserving comments | pending |
+| RC / Release | `0.2.0-rc.1` → `0.2.0` | Sprint 12 merged: spec, docs, CI hardening, WASM; published on crates.io | pending |
 | Stable | `1.0.0` | Spec frozen, no breaking changes planned | pending |
 
 **Checkpoint ritual** (done as part of closing the sprint that reaches it, after the user approves it):
@@ -162,13 +172,14 @@ i7-13650HX, pinned to one core; `cargo bench --features serde --bench compare`):
 - [x] Extend the Sprint 3 benchmark to `simd-json`, `sonic-rs` (`lightningcss` moves to Sprint 8, where there is CSS to compare)
 - [x] Larger benchmark corpus: canada / citm_catalog / twitter, fetched by `scripts/fetch-corpus.sh` (`benches/corpus.rs`)
 - [x] Profile-driven parser optimizations: SWAR string scan in strict JSON, `memchr3` list delimiting, hot-path recovery after the grammar changes
-- [ ] Typed loading clearly ahead of `serde_json` on compact layouts — **not reached**: on par (within ~7%), moved to Sprint 6
-- [x] CI job that fails on performance regressions (`scripts/perf-gate.sh`: base vs PR in the same job, alternating rounds, >10% fails)
+- [x] Typed loading ahead of `serde_json` on compact layouts and level on multi-line layouts, via generated loaders (`#[derive(Rost)]`, `rost::load`): 427M vs 446M cycles compact (−4%), 440M vs 446M multi-line. *The bar was moved on 2026-11-01: parser speed is a requirement for adoption, not the reason to adopt (see the new priorities below).*
+- [x] CI job that fails on performance regressions (`scripts/perf-gate.sh`; since Sprint 6 it counts instructions under valgrind, >3% fails)
 
 **Done when:** README shows reproducible numbers where `rost` leads or ties in its target workloads.
-✅ Leads on small configs (load ~1.2×, write ~2×), pretty writing (~1.5×), dynamic trees vs
+✅ Leads on writing small configs (~2×), pretty writing (~1.5×), dynamic trees vs
 `serde_json`/`simd-json` and query-ready indexing (canada indexed in 0.9 ms, faster than
-`serde_json` validates it); ties on large typed loads. Behind: `sonic-rs`'s arena DOM
+`serde_json` validates it); ties on large typed loads and on small config loads (a Sprint 5 reading of 1.2× on
+small configs was a cool-machine measurement; interleaved A/B in Sprint 6 shows parity). Behind: `sonic-rs`'s arena DOM
 (~4× faster than any owned tree) and strict validation of number-heavy JSON (canada 1.7×).
 
 | Measure (pinned) | Sprint 4 tip | Sprint 5 |
@@ -185,92 +196,122 @@ i7-13650HX, pinned to one core; `cargo bench --features serde --bench compare`):
 
 **Goal:** every lookup is O(1) or O(depth), with no rebuilding of views.
 
-- [ ] Typed loading clearly ahead of `serde_json` on compact layouts (carried over from Sprint 5)
-- [ ] Arena-backed `Value` (borrowed keys/strings) to close the gap with `sonic_rs::Value`
-- [ ] Block tree encoded in the bytecode (parent / first-child / next-sibling offsets)
-- [ ] Path index built during parsing for `find_block` (lazy `query_*` index lands in Sprint 3)
-- [ ] Allocation-free typed iterators for lists, enums and blocks
-- [ ] Key interning for repeated names
-- [ ] Bytecode format version byte for forward compatibility (moved from Sprint 2)
-- [ ] `.rostc` precompiled binary (versioned header, checksum), loadable via `mmap`
-- [ ] Document the 4 GiB `u32` offset limit or add `u64` offsets behind a feature
+- [ ] Typed loading clearly ahead of `serde_json` on compact layouts — **not reached**: with generated loaders (`#[derive(Rost)]`, `rost::load`) the compact layout is 4-7% ahead of `serde_json` and the multi-line layout level with it (see below)
+- [x] Arena-backed `Value`: `rost::doc::Doc` keeps a whole document on one flat tape of 16-byte nodes; keys and strings are offsets into the source. `Doc::from_json` 5.07–5.11 ms vs `sonic_rs::Value` 4.79–4.84 ms (1.06×; the owned `Value` takes 19 ms, 4× apart before); `Doc::from_rost` 8.1–8.4 ms vs `rost::Value` 21 ms
+- [x] Block tree encoded in the bytecode: every block-start record carries parent, end, first child and next sibling (`Block`, `Template::block`, `root_blocks`, `block_path`)
+- [x] Block lookup without scanning: `find_block` resolves through a name index and copies only the block it finds (100 calls on 5000 blocks: 497M → 3.1M instructions); `block_path` follows the tree links with no index at all
+- [x] Allocation-free typed iterators for lists and enums (`query_list_iter`, `query_enum_iter`; verified with a counting allocator)
+- [x] `query_list` / `query_enum` / `query_field` resolved through the path index (they rebuilt every block on each call)
+- [x] Key interning for repeated names: a `Doc` stores no key at all (an offset per key, 8 bytes, no allocation). Interning the owned `Value`'s keys with `Arc<str>` was built and measured: −17% instructions but +14% cycles (atomic reference counts), so it was dropped
+- [x] Bytecode format version byte for forward compatibility (header of `.rostc`, unknown versions rejected)
+- [x] `.rostc` precompiled binary (versioned header, checksum, structural validation incl. block links) and `mmap` loading behind the `mmap` feature
+- [x] Document the 4 GiB `u32` offset limit, and reject larger documents instead of wrapping offsets
+- [x] Perf gate counts instructions under valgrind (a wall-clock gate flagged identical code as +22%); self-comparison differs by < 0.03%
 
 **Done when:** `find_block` / `query_*` no longer allocate and scale independently of document size.
+*Status: met. `list_queries_x100` 995M → 2.4M instructions, `find_block_x100` 497M → 3.1M, on 5000 blocks.*
 
-## Sprint 7 — Rust ergonomics: derive and validation
+**Typed loading, measured (pinned core, interleaved runs, 50k records → `HashMap<String, Item>`, cycles net of setup):**
 
-**Goal:** describe data once as a Rust struct; get parsing, validation, defaults and docs for free.
+| Path | multi-line layout | compact layout |
+|---|---|---|
+| `serde_json` (compact JSON) | 446M | 446M |
+| `rost::from_str` (serde) | 481M (601M at the start of Sprint 6) | 460M |
+| `rost::load` (`#[derive(Rost)]`, generated) | 440M | **427M (−4% vs `serde_json`)** |
 
-- [ ] `rost-derive` crate with `#[derive(Rost)]` (replaces `rost_schema!` / `rost_block_schema!`)
-- [ ] Field attributes: `default`, `rename`, `range(min, max)`, `regex`, `one_of`, `optional`
-- [ ] Validation errors pointing to the exact source span
-- [ ] JSON Schema / `.rost` schema generation from types (editor autocompletion)
-- [ ] Typed newtypes out of the box: `Color`, `Dimension`, `Duration`, `Percentage`
+About 40% of the work (allocating the `String`s, hashing, inserting into the `HashMap`) is identical for
+every crate; a numeric-only record (no strings) loads in 186M for `serde_json` and 186M for `rost::load`.
+The generated loader removes serde's visitor layer and no more: the parser itself runs at `serde_json`'s speed.
 
-**Done when:** a config struct needs only `#[derive(Rost)]` and one `rost::load` call.
+## Sprint 7 — Hot reload, done right
 
-## Sprint 8 — CSS core
+**Goal:** edit a `.rost` file and the running program has the new value, always safe, always fast.
 
-**Goal:** a real styling language for Rust, not a key-value file with `#` in it.
+- [x] Event-driven watching through `notify` (feature `watch`), polling kept as fallback; correct with editors that save by rename or temp file, with debouncing of bursts
+- [x] `Reloader<T>`: typed live value (`T: Load`) behind a lock-free snapshot (`arc-swap`); readers never block and never see a half-written value
+- [x] Last good value stays when an edit is invalid; the error (with file, line and column) is delivered to a callback / channel and kept in `reloader.last_error()`
+- [x] Atomic swap: the new document is parsed, indexed and validated off to the side, then published in one step
+- [x] Structural diff between old and new document: callbacks per path (`on_change("window.width", …)`), so apps update only what changed
+- [x] Watch dependencies: a file and everything it imports reload together (hook ready for Sprint 9 imports)
+- [x] Reload latency measured end to end (write → new value visible) and reported; stress test with thousands of files and rapid saves, no missed final state
+- [x] Example: an app whose theme changes live while it runs (`examples/live_theme.rs`; a console loop, no TUI framework)
 
-- [ ] Selectors: type, `#id`, `.class`, descendant, child `>`, attribute, pseudo-states (`:hover`, `:focus`, `:disabled`)
-- [ ] Specificity, cascade and inheritance with documented rules
-- [ ] Variables / design tokens (`$primary`) resolved at load time
-- [ ] `@import` / `@use` with cycle detection
-- [ ] `@theme` variants (light/dark) and `@media` breakpoints
-- [ ] Color functions (`rgb`, `hsl`, `oklch`, named colors), shadows, gradients, transforms
-- [ ] `calc()` with typed units
-- [ ] Benchmark against `lightningcss` (moved from Sprint 5)
+*Status: met. Median write → new value 21 ms (20 ms debounce); 16 integration tests incl. ten saves in a second with three broken ones (4 reader threads, zero torn reads) and 1000 files × 3 rapid saves.*
 
-**Done when:** a complete widget theme (states, tokens, themes) can be expressed and resolved.
+**Done when:** an app holds `Reloader<Config>`, the file is saved ten times in a second including three broken versions, and the app ends on the last valid one with no panic, no stall and no torn read.
 
-## Sprint 9 — CSS for Rust UI frameworks
+## Sprint 8 — Typed configuration with no ceremony
 
-**Goal:** plug `rost` styles into real Rust UIs with live reload and zero frame drops.
+**Goal:** describe the config once as a Rust struct; get loading, defaults, validation and good errors.
 
-- [ ] Computed-style cache per node with dependency-based invalidation
-- [ ] `transition` and `@keyframes` with easing curves
-- [ ] Event-driven hot reload via `notify` (feature flag), replacing polling
-- [ ] Adapter crates: `rost-bevy`, `rost-egui`, `rost-iced` (others later)
-- [ ] Example apps per adapter
+- [x] `#[derive(Rost)]` complete: unit enums and newtype structs natively, data enums and multi-field tuple structs through serde (`Deserialize` required), type parameters, `rost::load_file` (*named-field structs, lifetimes, `rost::load`, `Load` exist since Sprint 6*)
+- [x] Field attributes: `range(min, max)`, `regex`, `one_of`, `optional`, `flatten` (*`default`, `rename` and `serde` exist*)
+- [x] Validation errors pointing to the exact source span, with the field path and what was expected
+- [x] Typed newtypes out of the box: `Color`, `Dimension` (owned, validated units; the borrowed `rost::Dimension` stays), `Duration`, `Percentage`, `Path`
+- [x] Environment and command-line overrides (`APP_WINDOW__WIDTH=800`) on top of the file
+- [x] `Reloader<T>` validates before it swaps (a value outside its range counts as a broken edit)
+- [x] Schema generation from types (JSON Schema and `.rost` schema) for editor autocompletion
 
-**Done when:** editing a `.rost` theme updates a running Bevy/egui/iced app instantly.
+*Status: met. 17 + 7 + 3 integration tests, 7 unit tests; the perf gate is unchanged (±0.01%).*
 
-## Sprint 10 — State and transactions
+**Done when:** a config struct needs only `#[derive(Rost)]`, one `Reloader::watch` call, and a bad value is reported at its line without touching the running config. **Reaches Alpha 2.**
 
-**Goal:** `rost` as an application state store with safe, atomic, observable changes.
+## Sprint 9 — Templates
+
+**Goal:** reuse and parameterise configuration, resolved at load time, with no eval.
+
+- [ ] Variables / tokens (`$primary`) with scopes and typed values, resolved at load time
+- [ ] `@import` / `@use` with cycle detection and clear errors; imports feed the reload dependency set
+- [ ] Reusable templates with parameters (`@template card(title, accent = $primary) { … }` and `@use card(title = "Home")`)
+- [ ] Overlays and profiles (`@profile dev`, `@profile release`, light / dark), selected at load time or switched live
+- [ ] Conditionals and repetition limited to data (`@if $profile == dev`, `@each item in list`), always terminating
+- [ ] Typed expressions with units (`calc(100% - $gap)`) evaluated at load time, never at run time
+- [ ] Output of a template is an ordinary document: `Doc`, `Value` and typed loading work unchanged on it
+- [ ] Benchmark: load plus resolve of a templated document against hand-expanded TOML / JSON
+
+**Done when:** an application theme with tokens, imports, two profiles and a parameterised component is one small set of files, and editing any of them live-reloads the resolved result.
+
+## Sprint 10 — Author experience and tooling
+
+**Goal:** people who write `.rost` get editor help and CI checks from day one.
+
+- [ ] `rost` CLI: `check` (parse, validate against a schema, resolve templates), `fmt`, `convert` (JSON / TOML ↔ rost), `diff`, `query`, `watch` (print the resolved document on every change)
+- [ ] Lossless CST: edit and save while preserving comments and formatting; canonical formatter
+- [ ] `tree-sitter-rost` grammar and `rost-lsp` (diagnostics with spans, completion from the schema, go to definition for tokens and imports)
+- [ ] Formal `SPEC.md` grammar (EBNF) with format version `@rost 1`, including templates
+- [ ] Migration guide and converters from `toml`, `serde_json` and `.env` configs
+
+**Done when:** a new user gets syntax highlighting, inline errors and `rost check` in CI without reading the source. **Reaches Beta 1.**
+
+## Sprint 11 — Live state and write-back
+
+**Goal:** the running program can also change the file and its own state safely.
 
 - [ ] `State` store with typed get/set by path, validated against the schema
 - [ ] Transactions: `state.transaction(|tx| { … })` → atomic commit, one notification
-- [ ] Per-path observers / signals
+- [ ] Per-path observers / signals, shared with the reload diff callbacks
+- [ ] Write-back: save a change from the program (a settings screen) to the file preserving comments and formatting, without triggering a reload loop
 - [ ] Undo / redo and snapshots
-- [ ] Lock-free reader snapshots (`arc-swap`) for render / worker threads
 - [ ] Incremental re-indexing of only the touched block
 - [ ] Structural diff and patch (JSON-Patch-like) between documents
 
-**Done when:** a game or UI can keep all its live state in `rost` with transactional updates.
+**Done when:** a settings screen edits values, the file is updated in place with its comments intact, and an external editor change merges with it.  **Reaches Beta 2.**
 
-## Sprint 11 — Declarative programming and API contracts
+## Sprint 12 — Hardening and release
 
-**Goal:** declare behaviour and API shapes in `rost`, get type-safe Rust out.
+**Goal:** frictionless adoption and a stable base.
 
-- [ ] Binding registry: `on_click = submit(form)` resolves to registered Rust functions (sandboxed, no eval)
-- [ ] `@api` blocks describing requests / responses / errors
-- [ ] `build.rs` code generation of Rust types and client/server stubs from `@api` blocks
-- [ ] API transactions: request batching and atomic multi-operation payloads
-- [ ] Lossless CST: edit and save while preserving comments and formatting
-- [ ] Canonical formatter (`rost fmt`)
-
-**Done when:** an HTTP API contract is defined in `.rost` and both sides compile against generated types.
-
-## Sprint 12 — Tooling, ecosystem and release
-
-**Goal:** frictionless adoption.
-
-- [ ] `rost` CLI: `fmt`, `check`, `convert`, `diff`, `query`
-- [ ] `rost-lsp` and `tree-sitter-rost` synced with the spec
-- [ ] Formal `SPEC.md` grammar (EBNF) with format version `@rost 1`
-- [ ] CI: tests, clippy `-D warnings`, `miri`, fuzzing, coverage, MSRV check
+- [ ] CI: tests, clippy `-D warnings`, `miri`, fuzzing of parser, templates and `.rostc`, coverage, MSRV check
 - [ ] `no_std + alloc` core, WASM build and JS bindings
-- [ ] User guide, cookbook (config, UI theme, game state, API contract), CHANGELOG
+- [ ] User guide and cookbook (app config, live theme, game balance tuning, templated service config), CHANGELOG
+- [ ] Final benchmark report against `serde_json`, `toml`, `sonic-rs`, `simd-json`
 - [ ] Publish `0.2` on crates.io, then `1.0` once the spec is frozen
+
+## Later (after 0.2)
+
+Kept from the earlier plan; none of it blocks the audience above.
+
+- CSS core: selectors, specificity and cascade, pseudo-states, `@media`, color functions, gradients, transforms, benchmark against `lightningcss`
+- UI adapters (`rost-bevy`, `rost-egui`, `rost-iced`), computed-style cache, `transition` and `@keyframes`
+- Binding registry (`on_click = submit(form)`) resolved to registered Rust functions
+- `@api` blocks and `build.rs` codegen of types and client / server stubs

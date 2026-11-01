@@ -109,7 +109,7 @@ impl<'a> Iterator for FieldIter<'a> {
             TAG_BLOCK_START => {
                 let name = resolve_slice(self.data, self.bytes, self.idx);
                 let line = read_u32(self.bytes, self.idx + 8);
-                self.idx += REC_NAMED - 1;
+                self.idx += REC_BLOCK_START - 1;
                 Some(ParsedField::BlockStart { name, line })
             }
             TAG_BLOCK_END => {

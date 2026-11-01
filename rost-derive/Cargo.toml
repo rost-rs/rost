@@ -1,0 +1,16 @@
+[package]
+name = "rost-derive"
+version = "0.2.0-alpha.2"
+edition = "2024"
+authors = ["The Rost Project Contributors"]
+description = "#[derive(Rost)] for the rost crate"
+license = "MIT"
+repository = "https://github.com/rost-rs/rost"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", default-features = false, features = ["derive", "full", "parsing", "printing", "proc-macro", "clone-impls"] }
