@@ -1363,3 +1363,57 @@ fn test_json_objects_are_rost_documents() {
     assert_eq!(rost::from_str::<Vec<u8>>("[1, 2, 3]").unwrap(), vec![1, 2, 3]);
     assert_eq!(rost::from_str::<Value>(" [{\"a\": 1}] ").unwrap(), serde_json::json!([{"a": 1}]));
 }
+
+#[cfg(feature = "serde")]
+#[test]
+fn test_typed_json_documents() {
+    use serde::Deserialize;
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    enum Mode {
+        Off,
+        Level(u8),
+        Range { lo: i32, hi: i32 },
+    }
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct Window {
+        width: u32,
+        title: Option<String>,
+    }
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct Config {
+        name: String,
+        window: Window,
+        backup: Option<Window>,
+        none: Option<Window>,
+        modes: Vec<Mode>,
+        mode: Mode,
+        matrix: Vec<Vec<f64>>,
+    }
+
+    let json = r#"{"name": "app", "window": {"width": 800, "title": null}, "backup": {"width": 1, "title": "b"},
+        "none": null, "modes": ["Off", {"Level": 3}, {"Range": {"lo": -1, "hi": 1}}], "mode": {"Level": 9},
+        "matrix": [[1.5, 2], []]}"#;
+    let expected = Config {
+        name: "app".into(),
+        window: Window { width: 800, title: None },
+        backup: Some(Window { width: 1, title: Some("b".into()) }),
+        none: None,
+        modes: vec![Mode::Off, Mode::Level(3), Mode::Range { lo: -1, hi: 1 }],
+        mode: Mode::Level(9),
+        matrix: vec![vec![1.5, 2.0], vec![]],
+    };
+    assert_eq!(rost::from_str::<Config>(json).unwrap(), expected);
+    assert_eq!(rost::from_template::<Config>(&Template::parse(json).unwrap()).unwrap(), expected);
+
+    // A block where a scalar is expected is an error, not a misaligned parse.
+    #[derive(Debug, Deserialize)]
+    #[allow(dead_code)]
+    struct Wrong {
+        name: String,
+    }
+    let err = rost::from_str::<Wrong>(r#"{"name": {"a": 1}}"#).unwrap_err().to_string();
+    assert!(err.contains("expected a scalar value, found a block or a list"), "{err}");
+}
