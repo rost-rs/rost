@@ -78,6 +78,18 @@ impl<'a> Block<'a> {
         std::iter::successors(self.first_child(), Block::next_sibling)
     }
 
+    /// The first block directly inside this one named `name`.
+    pub fn child(&self, name: &str) -> Option<Block<'a>> {
+        self.children().find(|c| c.name() == name)
+    }
+
+    /// Follows `a.b.c` down from this block, one child per segment. Walks the tree links
+    /// written while parsing, so it needs no index: cost is the number of siblings
+    /// compared at each level.
+    pub fn descend(&self, path: &str) -> Option<Block<'a>> {
+        path.split('.').try_fold(*self, |block, name| block.child(name))
+    }
+
     /// Index of the record after this block's end record (the end of the bytecode if the
     /// block is never closed).
     pub(crate) fn after(&self) -> usize {

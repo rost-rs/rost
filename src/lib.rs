@@ -382,6 +382,17 @@ impl Template {
         Some(Block::new(&self.data, &self.fields, rec))
     }
 
+    /// Follows a path of block names (`"window.title"`) from the top level of the
+    /// document using only the tree links written while parsing: no index is built, and
+    /// the cost is the number of sibling blocks compared at each level. A name that
+    /// contains a `.` itself is not addressable this way; use [`Template::block`].
+    pub fn block_path(&self, path: &str) -> Option<Block<'_>> {
+        let mut segments = path.strip_prefix('#').unwrap_or(path).split('.');
+        let first = segments.next()?;
+        let root = self.root_blocks().find(|b| b.name() == first)?;
+        segments.try_fold(root, |block, name| block.child(name))
+    }
+
     /// The blocks written at the top level of the document, in order.
     pub fn root_blocks(&self) -> RootBlocks<'_> {
         RootBlocks { data: &self.data, fields: &self.fields, idx: 0 }

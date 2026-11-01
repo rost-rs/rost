@@ -184,4 +184,13 @@ fn blocks_are_navigated_and_read_from_the_bytecode() {
     assert!(body.next_sibling().is_none());
     assert_eq!(body.first_child().unwrap().get("k").unwrap().value(), Some("1"));
     assert_eq!(doc.block("window.title").unwrap().get("text").unwrap().value(), Some("Hi"));
+
+    // The same blocks are reachable by walking the links alone, with no index.
+    let title = doc.block_path("window.title").unwrap();
+    assert_eq!(title.get("text").unwrap().value(), Some("Hi"));
+    assert_eq!(doc.block_path("#window.body.inner").unwrap().get("k").unwrap().value(), Some("1"));
+    assert_eq!(window.descend("body.inner").unwrap().name(), "inner");
+    assert!(doc.block_path("window.nope").is_none());
+    assert!(doc.block_path("title").is_none(), "only top-level blocks start a path");
+    assert!(doc.block_path("").is_none());
 }
