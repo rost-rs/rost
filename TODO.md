@@ -40,7 +40,7 @@ The execution plan lives in [`SPRINTS.md`](SPRINTS.md).
 - [ ] Block comments `/* */` and doc-comments `///` preserved in the AST
 - [ ] Lossless bidirectional `rost ⇄ JSON` (and `TOML`/`YAML`) conversion with a conformance suite
 - [ ] Serde serializer (`to_string`, `to_writer`) — only a deserializer exists today
-- [ ] Real zero-copy deserialization (`&'de str` borrowed from the buffer, not `visit_string`)
+- [x] Real zero-copy deserialization (`&'de str` borrowed from the buffer, not `visit_string`)
 - [ ] Serde enum support (unit, newtype, struct variants) mapped to `| a, b |`
 - [ ] `u32` offset limit (4 GiB): document it or allow `u64` offsets behind a feature
 - [ ] Canonical, idempotent formatter (`rost fmt`)
@@ -73,7 +73,7 @@ The execution plan lives in [`SPRINTS.md`](SPRINTS.md).
 
 ### Phase 4 — In-memory data structure ("DATA STRUCTURE" base)
 
-- [ ] Key/path index (hash or perfect table) built at parse time: O(1) lookups instead of linear scans in `get`/`find_block`
+- [ ] Key/path index (hash or perfect table) built at parse time: O(1) lookups instead of linear scans in `get`/`find_block` (lazy dot-path index for `query_*` done in Sprint 3)
 - [ ] Precomputed block tree (parent/child/sibling offsets in the bytecode) so `blocks()`/`find_block()` stop rebuilding `Vec<BlockView>`
 - [ ] Interning of repeated keys
 - [ ] Precompiled, mmap-able binary format (`.rostc`) with versioned header and checksum for instant production loads
@@ -87,7 +87,7 @@ The execution plan lives in [`SPRINTS.md`](SPRINTS.md).
 - [ ] Publish on crates.io with semver and an MSRV policy (today `edition = "2024"` and git-only dependency)
 - [ ] Verify that `rost-lsp` and `tree-sitter-rost` exist and track the spec (the README links them)
 - [ ] `rost` CLI: `fmt`, `check`, `convert` (json/toml/yaml), `diff`, `query`
-- [ ] Reproducible `criterion` benchmarks against `serde_json`, `simd-json`, `toml`, `lightningcss` (back up the "500 MB/s" claim)
+- [ ] Reproducible `criterion` benchmarks against `serde_json`, `simd-json`, `toml`, `lightningcss` (back up the "500 MB/s" claim) — `benches/compare.rs` vs `serde_json` / `toml` since Sprint 3
 - [ ] CI: tests, clippy `-D warnings` (clippy is clean as of Sprint 1), `miri`, fuzz, coverage
 - [ ] Docs: user guide, cookbook (UI, game config, linter), CHANGELOG
 - [ ] Remove redundant aliases (`dump`/`load`/`from_file`, `finish`/`into_string`) before 1.0

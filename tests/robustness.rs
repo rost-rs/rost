@@ -1,5 +1,6 @@
 //! Deterministic stress test: feeds mutated and random documents through every public
-//! entry point and checks that nothing panics and that strict and lenient parsing agree.
+//! entry point and checks that nothing panics, that strict and lenient parsing agree, and
+//! that the single-pass deserializer matches the bytecode one.
 //!
 //! Runs on stable in a few hundred milliseconds; `fuzz/` holds the coverage-guided
 //! equivalents for `cargo +nightly fuzz`.
@@ -86,6 +87,18 @@ fn exercise(src: &str) {
     #[cfg(feature = "serde")]
     {
         let _ = rost::from_template::<std::collections::HashMap<String, String>>(&lenient);
+
+        // The single-pass deserializer accepts every strictly valid document and yields
+        // exactly what the bytecode path yields.
+        let text = rost::from_str::<serde_json::Value>(src);
+        if let Ok(t) = &strict {
+            let tree = rost::from_template::<serde_json::Value>(t);
+            match (&text, &tree) {
+                (Ok(a), Ok(b)) => assert_eq!(a, b, "from_str/from_template disagree on {src:?}"),
+                (Err(e), Ok(_)) => panic!("from_str rejected a valid document {src:?}: {e}"),
+                _ => {}
+            }
+        }
     }
 }
 
@@ -108,5 +121,53 @@ fn random_documents_never_panic() {
             .map(|_| ALPHABET[rng.below(ALPHABET.len())] as char)
             .collect();
         exercise(&src);
+    }
+}
+
+/// Typed targets for the single-pass fast paths (integers, decimals, booleans, `null`).
+#[cfg(feature = "serde")]
+mod typed {
+    use serde::Deserialize;
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    pub struct V<T> {
+        pub v: T,
+    }
+
+    /// Asserts that `from_str` and `from_template` agree on `src` for `T`.
+    pub fn agree<T: for<'de> Deserialize<'de> + PartialEq + std::fmt::Debug>(src: &str) {
+        let Ok(t) = rost::Template::parse(src) else { return };
+        let tree = rost::from_template::<V<T>>(&t).map(|x| x.v);
+        let text = rost::from_str::<V<T>>(src).map(|x| x.v);
+        match (&text, &tree) {
+            (Ok(a), Ok(b)) => assert_eq!(a, b, "typed values disagree on {src:?}"),
+            (Err(_), Err(_)) => {}
+            _ => panic!("typed results disagree on {src:?}: from_str {text:?}, from_template {tree:?}"),
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn typed_fast_paths_match_the_shared_path() {
+    const PIECES: &[&str] = &[
+        "0", "7", "42", "-", ".", "5", "999999999999999999", "18446744073709551615", "1e3", "px", "%",
+        " ", "\t", ";", ",", "\r", "true", "false", "null", "#ff", "0x1f", "\"", "\\", "a", "}", "-0",
+        "1234567890123456", "3.25", "..",
+    ];
+    let mut rng = Rng(0x7E57_FA57_0000_0001);
+    for _ in 0..30_000 {
+        let value: String = (0..1 + rng.below(4)).map(|_| PIECES[rng.below(PIECES.len())]).collect();
+        let src = format!("v: {value}\n");
+        typed::agree::<u8>(&src);
+        typed::agree::<u64>(&src);
+        typed::agree::<i32>(&src);
+        typed::agree::<i64>(&src);
+        typed::agree::<f64>(&src);
+        typed::agree::<f32>(&src);
+        typed::agree::<bool>(&src);
+        typed::agree::<String>(&src);
+        typed::agree::<Option<i64>>(&src);
+        typed::agree::<Option<String>>(&src);
     }
 }

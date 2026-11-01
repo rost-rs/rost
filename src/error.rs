@@ -22,6 +22,8 @@ pub enum ParseErrorKind {
     UnclosedBlock,
     /// A key is not followed by `:`, `=`, `|`, `[` or `{`.
     ExpectedOperator,
+    /// A delimiter appears where a key should start.
+    ExpectedKey,
     /// The same key is defined twice in one scope.
     DuplicateKey(String),
 }
@@ -37,6 +39,7 @@ impl fmt::Display for ParseErrorKind {
             Self::ExpectedOperator => {
                 f.write_str("expected `:`, `=`, `|`, `[` or `{` after key")
             }
+            Self::ExpectedKey => f.write_str("expected a key"),
             Self::DuplicateKey(key) => write!(f, "duplicate key `{key}` in the same scope"),
         }
     }

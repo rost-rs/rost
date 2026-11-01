@@ -227,6 +227,7 @@ impl MalleablePatcher {
             let new_fields = parse_into_bytecode(&new_data);
             template.data = new_data;
             template.fields = new_fields;
+            template.index = Default::default();
             true
         }
     }

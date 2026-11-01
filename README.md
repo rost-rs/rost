@@ -116,7 +116,40 @@ assert_eq!(t.query_scalar("player.pet"), Some(Scalar::Null));
 With the `serde` feature, top-level properties, escapes and `null` (→ `None`) map
 straight onto your structs via `rost::from_template` / `Template::deserialize`.
 
-### 4. Programmatic Document Building
+### 4. Typed Loading in a Single Pass (`serde`)
+
+`rost::from_str` / `rost::from_slice` deserialize text straight into your types without
+building an index first: one scan, strings without escapes borrowed from the input, and
+integers, decimals and booleans converted while scanning. Errors carry line and column.
+
+```rust
+use serde::Deserialize;
+
+#[derive(Debug, Deserialize)]
+struct Config<'a> {
+    title: &'a str,
+    version: u32,
+    window: Window,
+}
+
+#[derive(Debug, Deserialize)]
+struct Window {
+    width: u32,
+    scale: f64,
+}
+
+let src = "title: \"My App\"\nversion: 3\n#window {\n    width: 1280\n    scale: 1.25\n}\n";
+let config: Config = rost::from_str(src).unwrap();
+assert_eq!((config.title, config.window.width), ("My App", 1280));
+
+let err = rost::from_str::<Config>("title: \"open\n").unwrap_err();
+assert_eq!(err.to_string(), "1:8: unterminated string literal");
+```
+
+Use `Template` + `query_*` when you need to look values up by path instead: after a
+one-time ~3 ms index build on a 5 MB document, each lookup takes ~60 ns.
+
+### 5. Programmatic Document Building
 
 ```rust
 use rost::RostBuilder;
@@ -134,11 +167,38 @@ assert!(document.contains("@theme \"cyberpunk\""));
 
 ## Testing & Benchmarks
 
-Run test suite:
+Run the test suite (unit, integration, doc tests and a deterministic stress test that
+also checks `from_str` against `from_template` on thousands of generated documents):
 
 ```bash
-cargo test
+cargo test --all-features
 ```
+
+Reproduce the comparison against `serde_json` and `toml` (equivalent data, same machine):
+
+```bash
+cargo bench --features serde --bench compare
+```
+
+Results for 50,000 records on an Intel i7-13650HX (pinned to one core, medians):
+
+| Workload | Contender | Median |
+|---|---|---|
+| 5 MB document → `HashMap<String, Item>` | **`rost::from_str`** | 14.2 ms |
+| | `serde_json`, one record per line (5.3 MB) | 13.5 ms |
+| | `serde_json`, pretty-printed like the rost file (7.7 MB) | 15.3 ms |
+| | `toml` | 93.8 ms |
+| Small config → struct | **`rost::from_str`** | 205 ns |
+| | `serde_json` compact / pretty | 193 ns / 233 ns |
+| | `toml` | 1.45 µs |
+| Load a queryable document | **rost lenient index** / strict (validated) | 5.6 ms / 8.8 ms |
+| | `serde_json::Value` DOM | 44.5 ms |
+| Lookup by dot path | **rost `query_raw_value`** (after one ~3 ms index build) | 60 ns |
+| | `serde_json` `Value` indexing (after the DOM build) | 84 ns |
+
+Typed loading is on par with `serde_json` (ahead of it when both files use the same
+layout, since rost files are ~30% smaller); loading a document you query by path is
+~8× faster than building a `serde_json::Value`.
 
 ---
 

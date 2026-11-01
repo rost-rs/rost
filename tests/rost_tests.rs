@@ -591,12 +591,12 @@ fn test_list_and_enum_splitting_respects_quotes_and_nesting() {
 #[test]
 fn test_line_numbers_survive_multiline_strings() {
     let t = Template::from_str(
-        "a: \"one\ntwo\"\n@doc \"x\ny\"\n##sub\n\"p\nq\"\nb: 1\n",
+        "a: \"one\ntwo\"\n@doc \"x\ny\"\n##sub \"p\nq\"\nb: 1\n",
     );
     assert_eq!(t.get("a").unwrap().line(), 1);
     assert_eq!(t.get("doc").unwrap().line(), 3);
-    assert_eq!(t.get("sub").unwrap().line(), 6);
-    assert_eq!(t.get("b").unwrap().line(), 8);
+    assert_eq!(t.get("sub").unwrap().line(), 5);
+    assert_eq!(t.get("b").unwrap().line(), 7);
 
     let t = Template::from_str("x: 1\ny: 2\n");
     assert_eq!(t.get("x").unwrap().line(), 1);
@@ -759,6 +759,14 @@ fn test_diagnostics_missing_operator() {
 }
 
 #[test]
+fn test_diagnostics_stray_delimiter() {
+    assert_eq!(diagnostics(": 1\n"), ["1:1: expected a key"]);
+    assert_eq!(diagnostics("a: 1\n  = f()\n"), ["2:3: expected a key"]);
+    // Lenient parsing still skips it and keeps the rest.
+    assert_eq!(Template::parse_lenient(": x\nb: 2\n").query_i64("b"), Some(2));
+}
+
+#[test]
 fn test_diagnostics_duplicate_keys() {
     assert_eq!(diagnostics("a: 1\nb: 2\na: 3\n"), ["3:1: duplicate key `a` in the same scope"]);
     assert_eq!(
@@ -767,6 +775,17 @@ fn test_diagnostics_duplicate_keys() {
     );
     // Same key in different scopes, or after a scope closes, is fine.
     assert!(diagnostics("w: 1\n#a { w: 2 }\n#b { w: 3, inner { w: 4 } }\n").is_empty());
+}
+
+#[test]
+fn test_diagnostics_duplicate_keys_in_large_scopes() {
+    // Scopes past the linear-scan threshold switch to a hash set; detection must not change.
+    let keys: String = (0..40).map(|i| format!(" k{i}: {i}\n")).collect();
+    let src = format!("#big {{\n{keys} k3: dup\n k39: dup\n}}\nk3: top\n#next {{\n{keys}}}\n");
+    assert_eq!(
+        diagnostics(&src),
+        ["42:2: duplicate key `k3` in the same scope", "43:2: duplicate key `k39` in the same scope"]
+    );
 }
 
 #[test]
@@ -962,4 +981,152 @@ fn test_unterminated_list_at_eof_does_not_underflow() {
         assert!(Template::parse(src).is_err());
     }
     assert_eq!(Template::from_str("k [a").get("k").unwrap().list_items(), vec!["a"]);
+}
+
+#[test]
+fn test_path_index_tracks_patches() {
+    let mut t = Template::from_str("#audio {\n volume: 1\n name: \"a\"\n}\nafter: x\n");
+    assert_eq!(t.query_raw_value("audio.volume"), Some("1"));
+    // Same-length rewrite keeps offsets; a longer one re-indexes the whole document.
+    assert!(t.patch_value("audio.volume", "2"));
+    assert_eq!(t.query_raw_value("audio.volume"), Some("2"));
+    assert!(t.patch_value("audio.name", "a much longer name"));
+    assert_eq!(t.query_string("audio.name").as_deref(), Some("a much longer name"));
+    assert_eq!(t.query_raw_value("after"), Some("x"));
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn test_serde_borrows_strings_from_the_template() {
+    use serde::Deserialize;
+    use std::borrow::Cow;
+
+    #[derive(Debug, Deserialize)]
+    struct Theme<'a> {
+        name: &'a str,
+        accent: &'a str,
+        #[serde(borrow)]
+        note: Cow<'a, str>,
+        #[serde(borrow)]
+        escaped: Cow<'a, str>,
+    }
+
+    let t = Template::parse("name: \"dark\"\naccent: #1e1e2e\nnote: \"plain\"\nescaped: \"a\\tb\"\n").unwrap();
+    let theme: Theme = rost::from_template(&t).unwrap();
+    assert_eq!((theme.name, theme.accent), ("dark", "#1e1e2e"));
+    // Strings without escapes point into the document; escaped ones are decoded copies.
+    assert!(t.as_bytes().as_ptr_range().contains(&theme.name.as_ptr()));
+    assert!(matches!(theme.note, Cow::Borrowed("plain")));
+    assert_eq!(theme.escaped, "a\tb");
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn test_serde_list_items_are_typed() {
+    use serde::Deserialize;
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct Data {
+        ids: Vec<u32>,
+        weights: Vec<f64>,
+        flags: Vec<bool>,
+        names: Vec<String>,
+        maybe: Vec<Option<i64>>,
+    }
+
+    let src = "ids [1, 2, 3]\nweights [0.5, 1e3]\nflags [true, false]\nnames [\"a, b\", c]\nmaybe [null, -4]\n";
+    let data: Data = rost::from_template(&Template::parse(src).unwrap()).unwrap();
+    assert_eq!(
+        data,
+        Data {
+            ids: vec![1, 2, 3],
+            weights: vec![0.5, 1000.0],
+            flags: vec![true, false],
+            names: vec!["a, b".into(), "c".into()],
+            maybe: vec![None, Some(-4)],
+        }
+    );
+}
+
+#[test]
+fn test_subtitle_does_not_swallow_the_next_line() {
+    // `##Section` without a value used to take the next quoted string in the document,
+    // silently dropping the property that owned it.
+    let t = Template::parse("##Section\nname: \"Valkyrie\"\n").unwrap();
+    assert_eq!(t.query_str("name"), Some("Valkyrie"));
+    assert_eq!(t.get("Section").and_then(|f| f.value()), Some(""));
+
+    let t = Template::parse("##state \"hover\"\n").unwrap();
+    assert_eq!(t.get("state").and_then(|f| f.value()), Some("hover"));
+    assert!(Template::parse("##s x\"v\"\n").is_err());
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn test_from_str_single_pass() {
+    use serde::Deserialize;
+    use std::collections::HashMap;
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct Item<'a> {
+        id: u64,
+        name: &'a str,
+        price: f64,
+        active: bool,
+        color: &'a str,
+        tags: Vec<&'a str>,
+        mode: String,
+        nick: Option<String>,
+    }
+
+    let src = "@theme \"dark\"\n##meta \"x\"\n#Header\n// comment\n\
+               #item_1 {\n    id: 18446744073709551615\n    name: \"first\", price: 9.5\n    active: true\n    color: #1e1e2e\n    tags [a, \"b, c\"]\n    mode | fast, slow |\n    nick: null\n    on_click = buy()\n}\n\
+               @item_2 { id: 2, name: \"\", price: -1e3, active: false, color: rgba(1, 2, 3), tags [], mode | x |, nick: \"n\" }\n";
+    let items: HashMap<&str, Item> = rost::from_str(src).unwrap();
+    assert_eq!(
+        items["item_1"],
+        Item {
+            id: u64::MAX,
+            name: "first",
+            price: 9.5,
+            active: true,
+            color: "#1e1e2e",
+            tags: vec!["a", "b, c"],
+            mode: "fast".into(),
+            nick: None,
+        }
+    );
+    assert_eq!(items["item_2"].color, "rgba(1, 2, 3)");
+    assert_eq!(items["item_2"].nick.as_deref(), Some("n"));
+    assert!(src.as_bytes().as_ptr_range().contains(&items["item_1"].name.as_ptr()));
+
+    // Same result as the bytecode path.
+    let via_template: HashMap<String, serde_json::Value> = rost::from_template(&Template::parse(src).unwrap()).unwrap();
+    let direct: HashMap<String, serde_json::Value> = rost::from_slice(src.as_bytes()).unwrap();
+    assert_eq!(direct, via_template);
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn test_from_str_reports_positions() {
+    use std::collections::HashMap;
+    type Doc = HashMap<String, serde_json::Value>;
+
+    let err = |src: &str| rost::from_str::<Doc>(src).unwrap_err().to_string();
+    assert_eq!(err("a: 1\nname: \"open\n"), "2:7: unterminated string literal");
+    assert_eq!(err("#a {\n x: 1\n"), "3:1: unclosed block: missing `}`");
+    assert_eq!(err("a: 1\n}\n"), "2:1: unexpected `}` without a matching block");
+    assert_eq!(err("a: 1\nwidth 120px\n"), "2:1: expected `:`, `=`, `|`, `[` or `{` after key");
+    assert_eq!(err("list [1, 2\n"), "1:7: unterminated list: missing closing `]`");
+    assert!(rost::from_slice::<Doc>(b"a: \xff\n").unwrap_err().to_string().starts_with("invalid UTF-8"));
+
+    #[derive(Debug, serde::Deserialize)]
+    #[allow(dead_code)]
+    struct Strict {
+        port: u16,
+    }
+    assert_eq!(
+        rost::from_str::<Strict>("port: 70000\n").unwrap_err().to_string(),
+        "cannot parse 'port' as u16: 70000"
+    );
 }

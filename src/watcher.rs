@@ -91,6 +91,7 @@ impl CentralWatcher {
                     data,
                     fields,
                     watcher: None,
+                    index: Default::default(),
                 }
             });
 

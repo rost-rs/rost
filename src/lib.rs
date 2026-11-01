@@ -84,6 +84,7 @@
 
 pub mod error;
 pub mod field;
+mod index;
 pub mod malleable;
 pub mod parser;
 pub mod query;
@@ -93,6 +94,8 @@ pub mod object;
 
 #[cfg(feature = "serde")]
 pub mod de;
+#[cfg(feature = "serde")]
+mod text;
 
 pub use error::{ParseError, ParseErrorKind};
 pub use field::{Dimension, ParsedField, QuoteStyle, Scalar};
@@ -103,10 +106,12 @@ pub use object::RostObject;
 
 #[cfg(feature = "serde")]
 pub use de::{from_block, from_template, DeError};
+#[cfg(feature = "serde")]
+pub use text::{from_slice, from_str};
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 /// The primary parsed representation of a `.rost` document.
 ///
@@ -121,6 +126,8 @@ pub struct Template {
     pub(crate) fields: Vec<u8>,
     /// Native zero-CPU filesystem watcher if hot-reloading was enabled.
     pub(crate) watcher: Option<Arc<HotReloadWatcher>>,
+    /// Path index built on the first dot-path query; must be reset whenever `fields` changes.
+    pub(crate) index: OnceLock<index::PathIndex>,
 }
 
 impl Template {
@@ -151,6 +158,7 @@ impl Template {
             data,
             fields,
             watcher,
+            index: OnceLock::new(),
         })
     }
 
@@ -179,6 +187,7 @@ impl Template {
             data,
             fields,
             watcher: None,
+            index: OnceLock::new(),
         }
     }
 
@@ -211,6 +220,7 @@ impl Template {
             data: src.as_bytes().to_vec(),
             fields,
             watcher: None,
+            index: OnceLock::new(),
         })
     }
 
@@ -397,6 +407,7 @@ impl Template {
         {
             self.data = new_tmpl.data;
             self.fields = new_tmpl.fields;
+            self.index = OnceLock::new();
             return true;
         }
         false
@@ -425,6 +436,16 @@ impl Template {
     /// (`"audio.volume"`, `"car.dimensions.width"`) matches the property inside that
     /// exact block nesting.
     pub(crate) fn locate_property(&self, path: &str) -> Option<usize> {
+        let clean_path = path.strip_prefix('#').unwrap_or(path);
+        self.index
+            .get_or_init(|| index::PathIndex::build(&self.data, &self.fields))
+            .get(&self.data, &self.fields, clean_path)
+    }
+
+    /// Linear-scan equivalent of [`Template::locate_property`], kept as the reference
+    /// implementation the index is tested against.
+    #[cfg(test)]
+    pub(crate) fn locate_property_linear(&self, path: &str) -> Option<usize> {
         let clean_path = path.strip_prefix('#').unwrap_or(path);
 
         // Fast-path: single key (no dots)
@@ -699,5 +720,24 @@ impl std::str::FromStr for Template {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(Self::from_str(s))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn path_index_agrees_with_linear_lookup() {
+        let src = "a: 1\n#x { a: 2, b: 3\n y { a: 4 }\n list [ 1, 2 ] }\n#x { b: 5, c: 6 }\n\
+                   z { #q { k: 7 } }\nb: 8\na: 9\n";
+        let t = Template::from_str(src);
+        let paths = [
+            "a", "b", "c", "k", "x", "x.a", "x.b", "x.c", "x.y.a", "x.list", "y.a", "z.q.k",
+            "#z.q.k", "z.k", "x.y", "", ".", "a.", ".a", "x..a",
+        ];
+        for p in paths {
+            assert_eq!(t.locate_property(p), t.locate_property_linear(p), "path {p:?}");
+        }
     }
 }

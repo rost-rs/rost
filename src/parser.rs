@@ -4,7 +4,7 @@
 //! for `.rost` documents. It transforms arbitrary `.rost` text into a compact
 //! binary offset arena (`Vec<u8>`) at sustained throughputs exceeding 500 MB/s.
 
-use memchr::{memchr, memchr2, memchr3};
+use memchr::{memchr, memchr2};
 use std::collections::HashSet;
 use std::ops::Range;
 
@@ -61,7 +61,7 @@ pub const fn record_len(tag: u8) -> usize {
 }
 
 // Fast 256-element lookup table for delimiter detection in 1 CPU cycle
-const IS_DELIM_OR_WS: [bool; 256] = {
+pub(crate) const IS_DELIM_OR_WS: [bool; 256] = {
     let mut table = [false; 256];
     table[b':' as usize] = true;
     table[b'=' as usize] = true;
@@ -156,20 +156,91 @@ impl Diagnostics for Vec<(ParseErrorKind, Range<usize>)> {
     }
 }
 
+/// Keys defined in each open scope, used by strict mode to detect duplicates.
+///
+/// All scopes share one key stack, so opening a block allocates nothing; small scopes
+/// (the common case) are checked with a linear scan, and a scope switches to a hash set
+/// only once it grows past [`ScopeKeys::LINEAR_MAX`] keys.
+struct ScopeKeys<'r> {
+    keys: Vec<&'r [u8]>,
+    scopes: Vec<Scope<'r>>,
+}
+
+struct Scope<'r> {
+    start: usize,
+    set: Option<HashSet<&'r [u8]>>,
+}
+
+impl<'r> ScopeKeys<'r> {
+    const LINEAR_MAX: usize = 16;
+
+    /// Creates the tracker without allocating; the root scope is added on first use.
+    fn new() -> Self {
+        Self {
+            keys: Vec::new(),
+            scopes: Vec::new(),
+        }
+    }
+
+    fn root(&mut self) {
+        if self.scopes.is_empty() {
+            self.scopes.push(Scope { start: 0, set: None });
+        }
+    }
+
+    fn open(&mut self) {
+        self.root();
+        self.scopes.push(Scope {
+            start: self.keys.len(),
+            set: None,
+        });
+    }
+
+    fn close(&mut self) {
+        if self.scopes.len() > 1
+            && let Some(scope) = self.scopes.pop()
+        {
+            self.keys.truncate(scope.start);
+        }
+    }
+
+    /// Records `key` in the innermost scope; returns `false` if it was already there.
+    fn insert(&mut self, key: &'r [u8]) -> bool {
+        self.root();
+        let Some(scope) = self.scopes.last_mut() else {
+            return true;
+        };
+        if let Some(set) = &mut scope.set {
+            return set.insert(key);
+        }
+        let current = &self.keys[scope.start..];
+        if current.contains(&key) {
+            return false;
+        }
+        if current.len() >= Self::LINEAR_MAX {
+            let mut set: HashSet<&[u8]> = current.iter().copied().collect();
+            set.insert(key);
+            self.keys.truncate(scope.start);
+            scope.set = Some(set);
+        } else {
+            self.keys.push(key);
+        }
+        true
+    }
+}
+
 /// Records `key` in the innermost scope and reports it if it was already defined there.
 #[inline(always)]
 fn check_duplicate<'r, D: Diagnostics>(
     diag: &mut D,
-    scopes: &mut [HashSet<&'r [u8]>],
+    scopes: &mut ScopeKeys<'r>,
     raw: &'r [u8],
     key: Range<usize>,
 ) {
     if !D::ENABLED {
         return;
     }
-    if let Some(scope) = scopes.last_mut()
-        && !scope.insert(&raw[key.clone()])
-    {
+    if !scopes.insert(&raw[key.clone()]) {
         let name = String::from_utf8_lossy(&raw[key.clone()]).into_owned();
         diag.report(ParseErrorKind::DuplicateKey(name), key);
     }
@@ -192,7 +263,7 @@ fn scan<D: Diagnostics>(raw: &[u8], diag: &mut D) -> Vec<u8> {
     // Name spans of currently open blocks; only tracked when diagnostics are enabled.
     let mut open_blocks: Vec<Range<usize>> = Vec::new();
     // Keys defined in each open scope (root first); only tracked when diagnostics are enabled.
-    let mut scopes: Vec<HashSet<&[u8]>> = if D::ENABLED { vec![HashSet::new()] } else { Vec::new() };
+    let mut scopes = ScopeKeys::new();
 
     'scan: while i < len {
         // 1. Vectorized / LUT whitespace skip and newline tracker
@@ -225,7 +296,7 @@ fn scan<D: Diagnostics>(raw: &[u8], diag: &mut D) -> Vec<u8> {
         if raw[i] == b'}' {
             if D::ENABLED {
                 if open_blocks.pop().is_some() {
-                    scopes.pop();
+                    scopes.close();
                 } else {
                     diag.report(ParseErrorKind::UnexpectedCloseBrace, i..i + 1);
                 }
@@ -253,7 +324,7 @@ fn scan<D: Diagnostics>(raw: &[u8], diag: &mut D) -> Vec<u8> {
             if i < len && raw[i] == b'{' {
                 if D::ENABLED {
                     open_blocks.push(start_name..start_name + name_len as usize);
-                    scopes.push(HashSet::new());
+                    scopes.open();
                 }
                 emit_block_start(&mut fields, name_off, name_len, line);
                 i += 1;
@@ -302,23 +373,28 @@ fn scan<D: Diagnostics>(raw: &[u8], diag: &mut D) -> Vec<u8> {
             let name_len = (i - start_name) as u32;
 
             if is_sub {
-                // Secondary section header: ##name "value"
-                if let Some(quote_start) = memchr(b'"', &raw[i..]) {
-                    let val_start = i + quote_start + 1;
+                // Secondary section header: ##name "value". The value is optional and must
+                // follow on the same line; a quote further ahead belongs to other entries.
+                while i < len && (raw[i] == b' ' || raw[i] == b'\t') {
+                    i += 1;
+                }
+                if i < len && raw[i] == b'"' {
+                    let val_start = i + 1;
                     if let Some(quote_end) = find_unescaped_quote(&raw[val_start..]) {
                         let val_off = val_start as u32;
                         let val_len = quote_end as u32;
-                        line += count_newlines(&raw[i..val_start]);
                         i = val_start + quote_end + 1;
 
                         emit_subtitle(&mut fields, name_off, name_len, val_off, val_len, line);
                         line += count_newlines(&raw[val_start..val_start + quote_end]);
                     } else {
                         let end = line_end(raw, val_start);
-                    diag.report(ParseErrorKind::UnterminatedString, val_start - 1..end);
-                    // Skip the rest of the line instead of re-reading the string body as keys.
-                    i = end;
+                        diag.report(ParseErrorKind::UnterminatedString, val_start - 1..end);
+                        // Skip the rest of the line instead of re-reading the string body as keys.
+                        i = end;
                     }
+                } else {
+                    emit_subtitle(&mut fields, name_off, name_len, i as u32, 0, line);
                 }
             } else {
                 // Check if followed by '{' opening a block selector
@@ -330,7 +406,7 @@ fn scan<D: Diagnostics>(raw: &[u8], diag: &mut D) -> Vec<u8> {
                 if probe < len && raw[probe] == b'{' {
                     if D::ENABLED {
                         open_blocks.push(start_name..start_name + name_len as usize);
-                        scopes.push(HashSet::new());
+                        scopes.open();
                     }
                     emit_block_start(&mut fields, name_off, name_len, line);
                     i = probe + 1;
@@ -356,7 +432,15 @@ fn scan<D: Diagnostics>(raw: &[u8], diag: &mut D) -> Vec<u8> {
         let key_len = (i - key_start) as u32;
 
         if key_len == 0 {
-            i += 1;
+            // A delimiter (`:`, `=`, `|`, `[`, `{`) where a key should start.
+            diag.report(ParseErrorKind::ExpectedKey, i..i + 1);
+            // `: value` / `= expr` is a property missing its key: skip the value too, so one
+            // mistake yields one diagnostic.
+            i = match raw[i] {
+                b':' => find_value_end(raw, i + 1).unwrap_or(len),
+                b'=' => memchr2(b'\n', b'}', &raw[i..]).map_or(len, |p| i + p),
+                _ => i + 1,
+            };
             continue;
         }
 
@@ -374,7 +458,7 @@ fn scan<D: Diagnostics>(raw: &[u8], diag: &mut D) -> Vec<u8> {
             b'{' => {
                 if D::ENABLED {
                     open_blocks.push(key_start..key_start + key_len as usize);
-                    scopes.push(HashSet::new());
+                    scopes.open();
                 }
                 emit_block_start(&mut fields, key_off, key_len, line);
                 i += 1;
@@ -387,33 +471,33 @@ fn scan<D: Diagnostics>(raw: &[u8], diag: &mut D) -> Vec<u8> {
                     i += 1;
                 }
 
-                if raw[i..].starts_with(RAW_QUOTE) {
-                    // Raw multi-line string: """ ... """ (no escape processing)
-                    let val_start = i + RAW_QUOTE.len();
-                    if let Some(body_len) = memchr::memmem::find(&raw[val_start..], RAW_QUOTE) {
-                        check_duplicate(diag, &mut scopes, raw, key_start..key_start + key_len as usize);
-                        emit_property(&mut fields, key_off, key_len, val_start as u32, body_len as u32, line);
-                        line += memchr::Memchr::new(b'\n', &raw[val_start..val_start + body_len]).count() as u32;
-                        i = val_start + body_len + RAW_QUOTE.len();
-                    } else {
-                        diag.report(ParseErrorKind::UnterminatedString, i..len);
-                        i = len;
-                    }
-                } else if i < len && raw[i] == b'"' {
+                if i < len && raw[i] == b'"' && !raw[i..].starts_with(RAW_QUOTE) {
                     let val_start = i + 1;
-                    if let Some(quote_end) = find_unescaped_quote(&raw[val_start..]) {
+                    if let Some((quote_end, newlines)) = scan_quoted(&raw[val_start..]) {
                         let val_off = val_start as u32;
                         let val_len = quote_end as u32;
                         i = val_start + quote_end + 1;
 
                         check_duplicate(diag, &mut scopes, raw, key_start..key_start + key_len as usize);
                         emit_property(&mut fields, key_off, key_len, val_off, val_len, line);
-                        line += count_newlines(&raw[val_start..val_start + quote_end]);
+                        line += newlines;
                     } else {
                         let end = line_end(raw, val_start);
-                    diag.report(ParseErrorKind::UnterminatedString, val_start - 1..end);
-                    // Skip the rest of the line instead of re-reading the string body as keys.
-                    i = end;
+                        diag.report(ParseErrorKind::UnterminatedString, val_start - 1..end);
+                        // Skip the rest of the line instead of re-reading the string body as keys.
+                        i = end;
+                    }
+                } else if i < len && raw[i] == b'"' {
+                    // Raw multi-line string: """ ... """ (no escape processing)
+                    let val_start = i + RAW_QUOTE.len();
+                    if let Some(body_len) = memchr::memmem::find(&raw[val_start..], RAW_QUOTE) {
+                        check_duplicate(diag, &mut scopes, raw, key_start..key_start + key_len as usize);
+                        emit_property(&mut fields, key_off, key_len, val_start as u32, body_len as u32, line);
+                        line += count_newlines(&raw[val_start..val_start + body_len]);
+                        i = val_start + body_len + RAW_QUOTE.len();
+                    } else {
+                        diag.report(ParseErrorKind::UnterminatedString, i..len);
+                        i = len;
                     }
                 } else {
                     let val_start = i;
@@ -683,16 +767,41 @@ fn emit_var_func(buf: &mut Vec<u8>, k_off: u32, k_len: u32, expr_off: u32, expr_
     }
 }
 
+/// Finds the closing quote of a string body and counts the newlines inside it.
+///
+/// Values are usually short, so one byte loop does both jobs for the first 64 bytes;
+/// longer strings fall back to the SIMD searches.
+#[inline(always)]
+fn scan_quoted(body: &[u8]) -> Option<(usize, u32)> {
+    let mut newlines = 0;
+    let mut i = 0;
+    while i < body.len().min(64) {
+        match body[i] {
+            b'"' => return Some((i, newlines)),
+            b'\\' => i += 1,
+            b'\n' => newlines += 1,
+            _ => {}
+        }
+        i += 1;
+    }
+    let end = find_unescaped_quote(body)?;
+    Some((end, count_newlines(&body[..end])))
+}
+
 /// Counts `\n` bytes using SIMD acceleration, to keep line numbers accurate across
 /// multi-line tokens.
 #[inline(always)]
 fn count_newlines(slice: &[u8]) -> u32 {
-    memchr::Memchr::new(b'\n', slice).count() as u32
+    // Most tokens are single-line: one search answers that before building an iterator.
+    match memchr(b'\n', slice) {
+        None => 0,
+        Some(first) => 1 + memchr::Memchr::new(b'\n', &slice[first + 1..]).count() as u32,
+    }
 }
 
 /// Trims trailing whitespace characters without scanning from start.
 #[inline(always)]
-fn trim_trailing_ws(data: &[u8], start: usize, mut end: usize) -> usize {
+pub(crate) fn trim_trailing_ws(data: &[u8], start: usize, mut end: usize) -> usize {
     while end > start {
         let b = data[end - 1];
         if b == b' ' || b == b'\t' || b == b'\r' || b == b';' || b == b',' {
@@ -738,15 +847,39 @@ pub(crate) fn resolve_slice<'a>(data: &'a [u8], fields: &[u8], idx: usize) -> &'
 /// (`rgba(1, 2, 3)`, `url("a,b")`); a newline always terminates it. Returns the absolute
 /// position of the delimiter, or `None` if the value runs to the end of the buffer.
 #[inline(always)]
-fn find_value_end(raw: &[u8], start: usize) -> Option<usize> {
-    let candidate = memchr3(b'\n', b',', b'}', &raw[start..]).map(|p| start + p);
-    let scan_end = candidate.unwrap_or(raw.len());
-    // Fast path: nothing that could nest a delimiter appears before the candidate.
-    let nested = match memchr3(b'(', b'[', b'"', &raw[start..scan_end]) {
-        Some(p) => start + p,
-        None => return candidate,
-    };
+pub(crate) fn find_value_end(raw: &[u8], start: usize) -> Option<usize> {
+    // Values are usually a handful of bytes, so one LUT-driven byte loop beats
+    // setting up SIMD searches per value.
+    let mut i = start;
+    while i < raw.len() {
+        match VALUE_LUT[raw[i] as usize] {
+            0 => i += 1,
+            VALUE_END => return Some(i),
+            _ => return find_nested_value_end(raw, i),
+        }
+    }
+    None
+}
 
+/// Byte class for [`find_value_end`]: a delimiter that ends the value.
+const VALUE_END: u8 = 1;
+/// Byte class for [`find_value_end`]: a byte that may nest delimiters.
+const VALUE_NEST: u8 = 2;
+
+const VALUE_LUT: [u8; 256] = {
+    let mut table = [0u8; 256];
+    table[b'\n' as usize] = VALUE_END;
+    table[b',' as usize] = VALUE_END;
+    table[b'}' as usize] = VALUE_END;
+    table[b'(' as usize] = VALUE_NEST;
+    table[b'[' as usize] = VALUE_NEST;
+    table[b'"' as usize] = VALUE_NEST;
+    table
+};
+
+/// Slow path of [`find_value_end`] from the first `(`, `[` or `"` of a value.
+#[cold]
+fn find_nested_value_end(raw: &[u8], nested: usize) -> Option<usize> {
     let mut depth: u32 = 0;
     let mut i = nested;
     while i < raw.len() {
@@ -768,7 +901,7 @@ fn find_value_end(raw: &[u8], start: usize) -> Option<usize> {
 
 /// Finds the next unescaped quotation mark `"` using SIMD acceleration.
 #[inline(always)]
-fn find_unescaped_quote(slice: &[u8]) -> Option<usize> {
+pub(crate) fn find_unescaped_quote(slice: &[u8]) -> Option<usize> {
     let mut offset = 0;
     while let Some(pos) = memchr(b'"', &slice[offset..]) {
         let abs_pos = offset + pos;
