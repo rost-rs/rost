@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- `scripts/rost-init.sh`: the demo is now driven by `app.rost` (widget tree with areas and sizes, blocks, texts, lists,
+  gauge, palette, status, text templates, key bindings, themes list), validated across fields before each reload.
+  `scripts/demo-test.py` reads the screen through a small terminal emulator and runs 24 checks.
+
 All notable changes per release checkpoint. Checkpoints are defined in
 [`SPRINTS.md`](SPRINTS.md#release-checkpoints). Versions below `1.0.0` may break the API.
 
