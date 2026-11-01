@@ -57,6 +57,9 @@ fn main() {
         .collect();
     let lists: String = (0..20_000).map(|i| format!("p{i} [[{i}.5, -{i}.25], [1, 2], \"s\"]\n")).collect();
 
+    let tagged: String = (0..5_000).map(|i| format!("#node_{i} {{\n    tags [a{i}, b, c]\n    kind | x, y |\n}}\n")).collect();
+    let tagged = rost::Template::from_str(&tagged);
+
     fastest("lenient_index", || {
         black_box(rost::parser::parse_into_bytecode(black_box(doc.as_bytes())));
     });
@@ -73,6 +76,14 @@ fn main() {
     fastest("small_config_x1000", || {
         for _ in 0..1000 {
             black_box(rost::from_str::<Config>(black_box(CONFIG)).unwrap());
+        }
+    });
+    fastest("list_queries_x100", || {
+        for i in (0..5_000).step_by(50) {
+            let path = format!("node_{i}.tags");
+            black_box(tagged.query_list(black_box(&path)));
+            let path = format!("node_{i}.kind");
+            black_box(tagged.query_enum(black_box(&path)));
         }
     });
 }
