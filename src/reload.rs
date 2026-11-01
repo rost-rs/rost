@@ -232,6 +232,8 @@ impl<T: Send + Sync + 'static> Inner<T> {
             {
                 state.text = Some(text.into());
             }
+            #[cfg(not(feature = "serde"))]
+            drop(text);
         }
         self.current.store(value.clone());
         self.version.fetch_add(1, Ordering::AcqRel);

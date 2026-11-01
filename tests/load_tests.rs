@@ -136,6 +136,7 @@ fn a_top_level_list_is_not_a_struct() {
 }
 
 #[derive(Rost, Debug)]
+#[allow(dead_code)]
 struct Outer {
     name: String,
     window: Window,
