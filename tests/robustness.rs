@@ -108,8 +108,7 @@ fn exercise(src: &str) {
             if let Ok(value) = value {
                 assert_eq!(Ok(&value), rost::from_template::<rost::Value>(t).as_ref(), "{src:?}");
                 for written in [rost::to_string(&value), rost::to_string_pretty(&value)] {
-                    // Keys the format cannot write back (e.g. `a"b`) are reported, not mangled.
-                    let Ok(written) = written else { continue };
+                    let written = written.unwrap_or_else(|e| panic!("cannot write the tree of {src:?}: {e}"));
                     let back = rost::from_str::<rost::Value>(&written)
                         .unwrap_or_else(|e| panic!("cannot read back {written:?} (from {src:?}): {e}"));
                     assert_eq!(back, value, "write/read cycle of {src:?} via {written:?}");

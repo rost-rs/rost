@@ -574,9 +574,14 @@ impl<'de, 's> MapAccess<'de> for BlockMapStreamAccess<'de, 's> {
                 TAG_BLOCK_START => {
                     let name = resolve_key(self.stream.data, self.stream.bytes, self.stream.idx + 1);
                     self.stream.idx += REC_NAMED;
+                    // `#name {` selectors drop their `#`; a quoted key is taken literally.
+                    let name_end = read_u32(self.stream.bytes, self.stream.idx - REC_NAMED + 1) as usize
+                        + read_u32(self.stream.bytes, self.stream.idx - REC_NAMED + 5) as usize;
                     let clean = match name {
-                        Cow::Borrowed(name) => Cow::Borrowed(strip_hash(name)),
-                        owned => owned,
+                        Cow::Borrowed(name) if self.stream.data.get(name_end) != Some(&b'"') => {
+                            Cow::Borrowed(strip_hash(name))
+                        }
+                        other => other,
                     };
                     self.current_entry = Some(StreamEntry::SubBlock);
                     return seed.deserialize(KeyDeserializer(clean)).map(Some);
