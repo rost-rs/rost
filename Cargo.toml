@@ -34,3 +34,8 @@ lto = "fat"
 name = "corpus"
 harness = false
 required-features = ["serde"]
+
+[[bench]]
+name = "gate"
+harness = false
+required-features = ["serde"]

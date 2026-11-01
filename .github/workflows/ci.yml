@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main, sprints]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: test (${{ matrix.features || 'default' }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        features: ["", "--features serde"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.features }}
+      - run: cargo test ${{ matrix.features }}
+      - run: cargo clippy --all-targets ${{ matrix.features }} -- -D warnings
+
+  perf:
+    name: perf gate
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Base and head are built and timed in the same job, in alternating rounds, so
+      # both see the same machine. Fails if any workload is more than 10% slower.
+      - run: ROUNDS=7 scripts/perf-gate.sh "origin/${{ github.base_ref }}" 10
