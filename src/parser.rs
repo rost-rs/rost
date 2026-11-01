@@ -424,14 +424,33 @@ fn scan<D: Diagnostics>(raw: &[u8], diag: &mut D) -> Vec<u8> {
         }
 
         // 7. General Identifier / Property Key scan using 1-cycle lookup table
-        let key_start = i;
-        while i < len && !IS_DELIM_OR_WS[raw[i] as usize] {
-            i += 1;
+        let quoted = raw[i] == b'"';
+        let key_start;
+        let key_end;
+        if quoted {
+            // Quoted key (`"any key": …`): the record holds the body, and the `"` right
+            // after it is how readers tell a quoted key from a bare one.
+            let Some(end) = find_unescaped_quote(&raw[i + 1..]) else {
+                let end = line_end(raw, i);
+                diag.report(ParseErrorKind::UnterminatedString, i..end);
+                i = end;
+                continue;
+            };
+            key_start = i + 1;
+            key_end = key_start + end;
+            line += count_newlines(&raw[key_start..key_end]);
+            i = key_end + 1;
+        } else {
+            key_start = i;
+            while i < len && !IS_DELIM_OR_WS[raw[i] as usize] {
+                i += 1;
+            }
+            key_end = i;
         }
         let key_off = key_start as u32;
-        let key_len = (i - key_start) as u32;
+        let key_len = (key_end - key_start) as u32;
 
-        if key_len == 0 {
+        if key_len == 0 && !quoted {
             // A delimiter (`:`, `=`, `|`, `[`, `{`) where a key should start.
             diag.report(ParseErrorKind::ExpectedKey, i..i + 1);
             // `: value` / `= expr` is a property missing its key: skip the value too, so one
@@ -834,6 +853,20 @@ pub(crate) fn resolve_slice<'a>(data: &'a [u8], fields: &[u8], idx: usize) -> &'
         return "";
     }
     unsafe { std::str::from_utf8_unchecked(&data[off..off + len]) }
+}
+
+/// Resolves the key of the record at `idx`, decoding escapes if the key was quoted.
+///
+/// A quoted key is followed by its closing `"`; a bare key never is, since bare keys end
+/// at a delimiter or whitespace.
+pub(crate) fn resolve_key<'a>(data: &'a [u8], fields: &[u8], idx: usize) -> std::borrow::Cow<'a, str> {
+    let key = resolve_slice(data, fields, idx);
+    let end = read_u32(fields, idx) as usize + key.len();
+    if data.get(end) == Some(&b'"') && key.contains('\\') {
+        crate::field::unescape(key)
+    } else {
+        std::borrow::Cow::Borrowed(key)
+    }
 }
 
 /// Finds the delimiter (`\n`, `,` or `}`) that ends an unquoted value starting at `start`.

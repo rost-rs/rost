@@ -15,7 +15,9 @@ use serde::de::value::BorrowedStrDeserializer;
 use serde::de::{self, DeserializeSeed, Deserializer, IgnoredAny, MapAccess, SeqAccess, Visitor};
 
 use crate::de::{DeError, FieldDeserializer, KeyDeserializer, MapEnum};
-use crate::field::QuoteStyle;
+use std::borrow::Cow;
+
+use crate::field::{unescape, QuoteStyle};
 use crate::parser::{find_list_end, find_unescaped_quote, find_value_end, trim_trailing_ws, IS_DELIM_OR_WS, RAW_QUOTE};
 
 /// Deserializes a `.rost` document from a string in a single pass.
@@ -406,6 +408,8 @@ struct Entries<'a, 'de> {
     p: &'a mut Parser<'de>,
     root: bool,
     key: &'de str,
+    /// The current key was quoted and contains escapes to decode.
+    escaped_key: bool,
     pending: Option<Pending>,
 }
 
@@ -419,7 +423,7 @@ impl<'de> Entries<'_, 'de> {
         let bytes = self.p.bytes;
         let start = skip_trivia(bytes, self.p.pos);
         match bytes.get(start) {
-            Some(&b) if b != b'#' && b != b'@' && !IS_DELIM_OR_WS[b as usize] => {
+            Some(&b) if b != b'#' && b != b'@' && b != b'"' && !IS_DELIM_OR_WS[b as usize] => {
                 let end = key_end(bytes, start);
                 let op = skip_inline_ws(bytes, end);
                 let pending = match bytes.get(op) {
@@ -510,6 +514,31 @@ impl<'de> Entries<'_, 'de> {
                     }
                     // `#Title` without a block: a section header, not data.
                 }
+                b'"' => {
+                    // Quoted key: `"any key": value`.
+                    let start = p.pos + 1;
+                    let Some((len, escaped)) = find_string_end(&p.bytes[start..]) else {
+                        return Err(p.error("unterminated string literal"));
+                    };
+                    p.pos = start + len + 1;
+                    let key = &p.src[start..start + len];
+                    p.skip_inline_ws();
+                    let pending = match p.peek() {
+                        Some(b':') => Pending::Scalar,
+                        Some(b'{') => Pending::Block,
+                        Some(b'[') => Pending::List,
+                        Some(b'|') => Pending::Enum,
+                        Some(b'=') => {
+                            p.pos = memchr2(b'\n', b'}', &p.bytes[p.pos..]).map_or(p.bytes.len(), |e| p.pos + e);
+                            continue;
+                        }
+                        _ => return Err(p.error("expected `:`, `=`, `|`, `[` or `{` after key")),
+                    };
+                    p.pos += 1;
+                    self.pending = Some(pending);
+                    self.escaped_key = escaped;
+                    return Ok(Some(key));
+                }
                 _ => {
                     let start = p.pos;
                     p.pos = key_end(p.bytes, start);
@@ -550,7 +579,13 @@ impl<'de> MapAccess<'de> for Entries<'_, 'de> {
         match self.next_entry()? {
             Some(key) => {
                 self.key = key;
-                seed.deserialize(KeyDeserializer(key)).map(Some)
+                let text = if self.escaped_key {
+                    self.escaped_key = false;
+                    unescape(key)
+                } else {
+                    Cow::Borrowed(key)
+                };
+                seed.deserialize(KeyDeserializer(text)).map(Some)
             }
             None => Ok(None),
         }
@@ -620,7 +655,7 @@ impl<'de> Deserializer<'de> for Block<'_, 'de> {
 
     #[inline]
     fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, DeError> {
-        visitor.visit_map(Entries { p: self.p, root: self.root, key: "", pending: None })
+        visitor.visit_map(Entries { p: self.p, root: self.root, key: "", escaped_key: false, pending: None })
     }
 
     fn deserialize_option<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, DeError> {
@@ -629,7 +664,7 @@ impl<'de> Deserializer<'de> for Block<'_, 'de> {
 
     /// Skips the block while still validating it.
     fn deserialize_ignored_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, DeError> {
-        let mut entries = Entries { p: self.p, root: self.root, key: "", pending: None };
+        let mut entries = Entries { p: self.p, root: self.root, key: "", escaped_key: false, pending: None };
         while entries.next_key::<IgnoredAny>()?.is_some() {
             entries.next_value::<IgnoredAny>()?;
         }
@@ -643,7 +678,7 @@ impl<'de> Deserializer<'de> for Block<'_, 'de> {
         _variants: &'static [&'static str],
         visitor: V,
     ) -> Result<V::Value, DeError> {
-        visitor.visit_enum(MapEnum(Entries { p: self.p, root: self.root, key: "", pending: None }))
+        visitor.visit_enum(MapEnum(Entries { p: self.p, root: self.root, key: "", escaped_key: false, pending: None }))
     }
 
     serde::forward_to_deserialize_any! {

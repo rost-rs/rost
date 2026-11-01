@@ -1311,3 +1311,26 @@ fn test_untyped_values_keep_units() {
 fn test_json_escapes_decode() {
     assert_eq!(rost::field::unescape(r"a\bb\fc\/d"), "a\u{8}b\u{c}c/d");
 }
+
+#[test]
+fn test_quoted_keys() {
+    let src = "\"two words\": 1\n\"a\\\"b\": \"x\"\n\"\": empty\n\"my block\" {\n    \"inner key\" [1, 2]\n}\nbare: 2\n";
+    let t = Template::parse(src).unwrap();
+    assert_eq!(t.get_value("two words"), Some("1"));
+    assert_eq!(t.query_str("my block.inner key"), None);
+    assert_eq!(t.query_list("my block.inner key"), Some(vec!["1", "2"]));
+    assert_eq!(t.get_value("bare"), Some("2"));
+    assert!(Template::parse("\"open: 1\n").is_err());
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn test_serde_quoted_keys() {
+    use std::collections::BTreeMap;
+    type Doc = BTreeMap<String, serde_json::Value>;
+
+    let src = "\"two words\": 1\n\"a\\\"b\": \"x\"\n\"\": 3\n\"my block\" { \"k\\n\": true }\n";
+    let expected: Doc = serde_json::from_str(r#"{"two words": 1, "a\"b": "x", "": 3, "my block": {"k\n": true}}"#).unwrap();
+    assert_eq!(rost::from_str::<Doc>(src).unwrap(), expected);
+    assert_eq!(rost::from_template::<Doc>(&Template::parse(src).unwrap()).unwrap(), expected);
+}

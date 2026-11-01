@@ -247,14 +247,17 @@ macro_rules! key_integers {
 
 /// A key: a string that also reads as an integer, a bool or a unit variant, so maps
 /// such as `HashMap<u32, T>` work like they do in `serde_json`.
-pub(crate) struct KeyDeserializer<'a>(pub(crate) &'a str);
+pub(crate) struct KeyDeserializer<'a>(pub(crate) Cow<'a, str>);
 
 impl<'de> Deserializer<'de> for KeyDeserializer<'de> {
     type Error = DeError;
 
     #[inline]
     fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
-        visitor.visit_borrowed_str(self.0)
+        match self.0 {
+            Cow::Borrowed(s) => visitor.visit_borrowed_str(s),
+            Cow::Owned(s) => visitor.visit_string(s),
+        }
     }
 
     key_integers! {
@@ -271,7 +274,7 @@ impl<'de> Deserializer<'de> for KeyDeserializer<'de> {
     }
 
     fn deserialize_bool<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
-        match self.0 {
+        match &*self.0 {
             "true" => visitor.visit_bool(true),
             "false" => visitor.visit_bool(false),
             _ => Err(DeError(format!("invalid bool map key: {}", self.0))),
@@ -292,7 +295,10 @@ impl<'de> Deserializer<'de> for KeyDeserializer<'de> {
         _variants: &'static [&'static str],
         visitor: V,
     ) -> Result<V::Value, Self::Error> {
-        visitor.visit_enum(BorrowedStrDeserializer::new(self.0))
+        match self.0 {
+            Cow::Borrowed(s) => visitor.visit_enum(BorrowedStrDeserializer::new(s)),
+            Cow::Owned(s) => visitor.visit_enum(de::value::StringDeserializer::<DeError>::new(s)),
+        }
     }
 
     serde::forward_to_deserialize_any! {
@@ -553,6 +559,7 @@ impl<'de, 's> MapAccess<'de> for BlockMapStreamAccess<'de, 's> {
             match tag {
                 TAG_COMMON_TEXT => {
                     let key = resolve_slice(self.stream.data, self.stream.bytes, self.stream.idx + 1);
+                    let key_text = resolve_key(self.stream.data, self.stream.bytes, self.stream.idx + 1);
                     let val = resolve_slice(self.stream.data, self.stream.bytes, self.stream.idx + 9);
                     let quote = QuoteStyle::detect(
                         self.stream.data,
@@ -561,24 +568,27 @@ impl<'de, 's> MapAccess<'de> for BlockMapStreamAccess<'de, 's> {
                     );
                     self.stream.idx += REC_PAIR;
                     self.current_entry = Some(StreamEntry::Field { name: key, val, quote });
-                    return seed.deserialize(KeyDeserializer(key)).map(Some);
+                    return seed.deserialize(KeyDeserializer(key_text)).map(Some);
                 }
                 TAG_BLOCK_START => {
-                    let name = resolve_slice(self.stream.data, self.stream.bytes, self.stream.idx + 1);
+                    let name = resolve_key(self.stream.data, self.stream.bytes, self.stream.idx + 1);
                     self.stream.idx += REC_NAMED;
-                    let clean = strip_hash(name);
+                    let clean = match name {
+                        Cow::Borrowed(name) => Cow::Borrowed(strip_hash(name)),
+                        owned => owned,
+                    };
                     self.current_entry = Some(StreamEntry::SubBlock);
                     return seed.deserialize(KeyDeserializer(clean)).map(Some);
                 }
                 TAG_LIST => {
-                    let key = resolve_slice(self.stream.data, self.stream.bytes, self.stream.idx + 1);
+                    let key = resolve_key(self.stream.data, self.stream.bytes, self.stream.idx + 1);
                     let raw = resolve_slice(self.stream.data, self.stream.bytes, self.stream.idx + 9);
                     self.stream.idx += REC_RANGE;
                     self.current_entry = Some(StreamEntry::List { raw });
                     return seed.deserialize(KeyDeserializer(key)).map(Some);
                 }
                 TAG_ENUM => {
-                    let key = resolve_slice(self.stream.data, self.stream.bytes, self.stream.idx + 1);
+                    let key = resolve_key(self.stream.data, self.stream.bytes, self.stream.idx + 1);
                     let raw = resolve_slice(self.stream.data, self.stream.bytes, self.stream.idx + 9);
                     self.stream.idx += REC_RANGE;
                     self.current_entry = Some(StreamEntry::Enum { raw });
@@ -669,7 +679,7 @@ impl<'de> MapAccess<'de> for BlockViewDeserializer<'de> {
             return Ok(None);
         }
         let f = &self.block.fields[self.idx];
-        seed.deserialize(KeyDeserializer(f.name())).map(Some)
+        seed.deserialize(KeyDeserializer(Cow::Borrowed(f.name()))).map(Some)
     }
 
     fn next_value_seed<V: DeserializeSeed<'de>>(&mut self, seed: V) -> Result<V::Value, Self::Error> {
