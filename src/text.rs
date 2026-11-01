@@ -120,7 +120,7 @@ pub fn from_reader<R: std::io::Read, T: de::DeserializeOwned>(mut reader: R) -> 
 }
 
 mod fast;
-pub use fast::{load, Fast, Field, Load};
+pub use fast::{load, load_file, Fast, Field, Load, Mark};
 
 /// Byte classes skipped between entries: whitespace, separators.
 const TRIVIA: [bool; 256] = {

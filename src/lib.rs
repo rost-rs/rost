@@ -97,6 +97,10 @@ pub mod query;
 pub mod rostc;
 pub mod schema;
 pub mod watcher;
+pub mod describe;
+pub mod validate;
+#[cfg(feature = "serde")]
+pub mod types;
 #[cfg(feature = "serde")]
 pub mod diff;
 #[cfg(feature = "watch")]
@@ -135,7 +139,10 @@ pub use ser::{to_string, to_string_pretty, to_vec, to_vec_pretty, to_writer, to_
 #[cfg(feature = "derive")]
 pub use rost_derive::Rost;
 #[cfg(feature = "serde")]
-pub use text::{from_reader, from_slice, from_str, load, Fast, Field, Load};
+pub use text::{from_reader, from_slice, from_str, load, load_file, Fast, Field, Load, Mark};
+pub use describe::{Describe, FieldDesc, TypeDesc};
+#[cfg(feature = "derive")]
+pub use rost_derive::Describe;
 #[cfg(feature = "serde")]
 pub use value::{from_value, Map, Value};
 
