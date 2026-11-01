@@ -241,24 +241,37 @@ let document = RostBuilder::new()
 assert!(document.contains("@theme \"cyberpunk\""));
 ```
 
-### 8. Precompiled Documents and Allocation-Free Queries
+### 8. Precompiled Documents, Block Trees and Borrowed Trees
 
 ```rust
-use rost::Template;
+use rost::{doc::Doc, Template};
 
-let doc = Template::parse("#inventory { items [sword, \"magic shield\"] }")?;
-doc.save_rostc("inventory.rostc")?;                       // document + bytecode, versioned, checksummed
+let doc = Template::parse("#window { width: 800\n  #title { text: \"Hi\" } }")?;
 
-let doc = Template::load_rostc("inventory.rostc")?;       // no parsing
-for item in doc.query_list_iter("inventory.items").unwrap() {
-    println!("{item}");                                   // borrowed from the document, no allocation
+// Blocks know their parent, children and siblings: navigation never scans or allocates.
+let window = doc.block("window").unwrap();
+for child in window.children() {
+    println!("{} → {:?}", child.name(), child.get("text").map(|f| f.value()));
 }
+
+// Save the document with its bytecode; loading it again skips parsing.
+doc.save_rostc("window.rostc")?;
+let doc = Template::load_rostc("window.rostc")?;
+for item in doc.query_list_iter("inventory.items").into_iter().flatten() {
+    println!("{item}"); // borrowed from the document, no allocation
+}
+
+// A whole JSON or .rost document as one flat tape: ~4x faster to build than `Value`.
+let text = r#"{"name": "rost", "tags": ["fast", "small"]}"#;
+let tape = Doc::from_json(text)?;
+assert_eq!(tape.root().get("name").and_then(|v| v.as_str()), Some("rost"));
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-A `.rostc` file is validated on load (magic, format version, checksum, UTF-8 and every
-offset of the bytecode), so a damaged or hostile file is an error, never a panic or an
-invalid `&str`. Documents over 4 GiB are rejected, since the bytecode uses `u32` offsets.
+A `.rostc` file is validated on load (magic, format version, checksum, UTF-8, every offset
+and block link of the bytecode), so a damaged or hostile file is an error, never a panic or
+an invalid `&str`. With the `mmap` feature, `unsafe Template::mmap_rostc` uses the file in
+place instead of copying it. Documents over 4 GiB are rejected: the bytecode uses `u32` offsets.
 
 ---
 
@@ -296,8 +309,9 @@ timings include copying the input, since it parses in place:
 | | `sonic-rs` / `simd-json` | 151–155 ns / 272–310 ns |
 | | `toml` | 1.1 µs |
 | 5 MB document → dynamic tree | **`rost::Value`** / **`rost::json::from_str`** | 21.0 ms / 18.5–18.9 ms |
+| | **`Doc::from_json`** / **`Doc::from_rost`** (borrowed flat tape) | 5.1 ms / 8.1–8.4 ms |
 | | `serde_json::Value` | 25–27 ms |
-| | `sonic_rs::Value` (arena-backed DOM) | 4.6–4.8 ms |
+| | `sonic_rs::Value` (arena-backed DOM) | 4.8 ms |
 | | `simd_json::OwnedValue` | 22–23 ms |
 | Serialize the 50k-record map | **`rost::to_string`** / **`to_string_pretty`** | 3.8 ms / 3.6–3.7 ms |
 | | `serde_json::to_string` / `to_string_pretty` | 3.5 ms / 5.3 ms |
@@ -307,23 +321,24 @@ timings include copying the input, since it parses in place:
 | Validate 5.3 MB of JSON | **`rost::json::validate`** | 3.9 ms |
 | | `serde_json` / `sonic-rs` (`IgnoredAny`) | 3.3–3.5 ms / 5.3–5.5 ms |
 | Load a queryable document | **rost lenient index** / strict (validated) | 4.4–4.6 ms / 5.2–5.5 ms |
-| | **`Template::from_rostc`** (precompiled: checksum + validation, no parsing) | 3.7–3.8 ms |
+| | **`Template::from_rostc`** (precompiled: checksum + validation, no parsing) / **`mmap_rostc`** | 4.1 ms / 3.6–3.8 ms |
 | | **`Template::from_json`** (strict JSON, validated + indexed) | 9.6–10.1 ms |
 | Lookup by dot path | **rost `query_raw_value`** (after one index build) | 40 ns |
 | | `serde_json` `Value` indexing (after the DOM build) | 60–67 ns |
 
 Real-world JSON (serde-rs/json-benchmark files, same machine, medians):
 
-| File | `json::validate` | `serde_json` validate | rost lenient index | `json::from_str` → `Value` | `serde_json::Value` | `sonic_rs::Value` |
-|---|---|---|---|---|---|---|
-| canada (2.2 MB, numbers) | 2.1–2.3 ms | 1.3 ms | **0.9 ms** | 6.4–6.5 ms | 6.6–6.8 ms | 1.8 ms |
-| citm_catalog (1.7 MB) | **0.9 ms** | 0.9 ms | **0.6 ms** | **2.1 ms** | 2.3 ms | 0.9 ms |
-| twitter (0.6 MB, strings) | 0.3 ms | 0.25 ms | 0.27 ms | 1.36 ms | 1.30 ms | 0.43 ms |
+| File | `json::validate` | `serde_json` validate | rost lenient index | `json::from_str` → `Value` | `Doc::from_json` | `serde_json::Value` | `sonic_rs::Value` |
+|---|---|---|---|---|---|---|---|
+| canada (2.2 MB, numbers) | 2.1–2.8 ms | 1.3 ms | **0.9 ms** | 6.4–7.0 ms | 3.1 ms | 6.6–7.0 ms | 1.8–2.0 ms |
+| citm_catalog (1.7 MB) | **0.9 ms** | 0.9 ms | **0.6 ms** | 2.1–2.2 ms | 1.14 ms | 2.3–2.5 ms | 0.96 ms |
+| twitter (0.6 MB, strings) | 0.3 ms | 0.25 ms | 0.27 ms | 1.36–1.43 ms | **0.40 ms** | 1.30–1.38 ms | 0.45 ms |
 
 Small configs load ~1.2× faster than `serde_json` and write ~2× faster; typed loading of
 large documents is on par (within ~7%) with `serde_json` and `sonic-rs`; the dynamic tree
-beats `serde_json::Value` and `simd-json`, while `sonic-rs`'s arena DOM is ~4× ahead of
-every owned tree. Indexing a JSON file for queries is faster than `serde_json` merely
+beats `serde_json::Value` and `simd-json`, and `Doc`, the borrowed flat tape, builds in
+1.06× the time of `sonic-rs`'s arena DOM on the 5 MB document (ahead of it on twitter; 1.5× behind on
+number-heavy canada). Indexing a JSON file for queries is faster than `serde_json` merely
 validating it. rost files are ~30% smaller than equivalent pretty JSON.
 
 ---

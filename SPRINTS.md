@@ -185,19 +185,28 @@ i7-13650HX, pinned to one core; `cargo bench --features serde --bench compare`):
 
 **Goal:** every lookup is O(1) or O(depth), with no rebuilding of views.
 
-- [ ] Typed loading clearly ahead of `serde_json` on compact layouts (carried over from Sprint 5; still on par → Sprint 7)
-- [ ] Arena-backed `Value` (borrowed keys/strings) to close the gap with `sonic_rs::Value` (→ Sprint 7)
-- [ ] Block tree encoded in the bytecode (parent / first-child / next-sibling offsets) (→ Sprint 7)
-- [ ] Path index built during parsing for `find_block` (`find_block` / `blocks()` still scan the document; the lazy index serves every `query_*`)
+- [ ] Typed loading clearly ahead of `serde_json` on compact layouts — **not reached**: measured on par (see below)
+- [x] Arena-backed `Value`: `rost::doc::Doc` keeps a whole document on one flat tape of 16-byte nodes; keys and strings are offsets into the source. `Doc::from_json` 5.07–5.11 ms vs `sonic_rs::Value` 4.79–4.84 ms (1.06×; the owned `Value` takes 19 ms, 4× apart before); `Doc::from_rost` 8.1–8.4 ms vs `rost::Value` 21 ms
+- [x] Block tree encoded in the bytecode: every block-start record carries parent, end, first child and next sibling (`Block`, `Template::block`, `root_blocks`, `block_path`)
+- [x] Block lookup without scanning: `find_block` resolves through a name index and copies only the block it finds (100 calls on 5000 blocks: 497M → 3.1M instructions); `block_path` follows the tree links with no index at all
 - [x] Allocation-free typed iterators for lists and enums (`query_list_iter`, `query_enum_iter`; verified with a counting allocator)
 - [x] `query_list` / `query_enum` / `query_field` resolved through the path index (they rebuilt every block on each call)
-- [ ] Key interning for repeated names (dropped: the index stores hashes, not strings, so there is nothing to intern yet)
+- [x] Key interning for repeated names: a `Doc` stores no key at all (an offset per key, 8 bytes, no allocation). Interning the owned `Value`'s keys with `Arc<str>` was built and measured: −17% instructions but +14% cycles (atomic reference counts), so it was dropped
 - [x] Bytecode format version byte for forward compatibility (header of `.rostc`, unknown versions rejected)
-- [x] `.rostc` precompiled binary (versioned header, checksum, structural validation) — `mmap` loading not done: `Template` owns its buffers
-- [x] Document the 4 GiB `u32` offset limit, and reject larger documents instead of wrapping offsets (`u64` offsets behind a feature not done)
+- [x] `.rostc` precompiled binary (versioned header, checksum, structural validation incl. block links) and `mmap` loading behind the `mmap` feature
+- [x] Document the 4 GiB `u32` offset limit, and reject larger documents instead of wrapping offsets
+- [x] Perf gate counts instructions under valgrind (a wall-clock gate flagged identical code as +22%); self-comparison differs by < 0.03%
 
 **Done when:** `find_block` / `query_*` no longer allocate and scale independently of document size.
-*Status: met for list/enum/field queries (`list_queries_x100`: 43.6 ms → 22 µs on 5000 blocks); not met for `find_block`.*
+*Status: met. `list_queries_x100` 995M → 2.4M instructions, `find_block_x100` 497M → 3.1M, on 5000 blocks.*
+
+**Typed loading, measured (pinned core, interleaved runs, 50k records → `HashMap<String, Item>`):**
+rost compact layout 445M cycles vs `serde_json` 447M (parity); on the multi-line layout rost is
+7-8% faster than at the start of the sprint after boxing `DeError` (601M → 555M), but still
+level with `serde_json`. About 40% of the work (allocating the `String`s, hashing, inserting into
+the `HashMap`) is identical for both crates, and what remains is serde's visitor protocol. A
+clearly faster path needs code generated per type (`#[derive(Rost)]`, Sprint 7), not a faster
+generic parser.
 
 ## Sprint 7 — Rust ergonomics: derive and validation
 

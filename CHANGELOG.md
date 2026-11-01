@@ -6,18 +6,28 @@ All notable changes per release checkpoint. Checkpoints are defined in
 ## Unreleased (Sprint 6)
 
 ### Added
-- `.rostc` precompiled documents: `Template::{to_rostc, from_rostc, save_rostc, load_rostc}`
-  with a magic, a format version byte, a checksum and structural validation of untrusted files.
+- `rost::doc::{Doc, ValueRef}`: a borrowed document tree on a flat tape. `Doc::from_json`,
+  `Doc::from_rost`; navigation by `get`, `at`, `iter`, `entries`; `to_value` for the owned `Value`.
+- Block tree in the bytecode: `Block`, `Template::{block, root_blocks, block_path}`,
+  `Block::{parent, first_child, next_sibling, children, fields, get, child, descend}`.
+- `.rostc` precompiled documents: `Template::{to_rostc, from_rostc, save_rostc, load_rostc}` with a
+  magic, a format version byte, a checksum and structural validation of untrusted files; and
+  `unsafe Template::mmap_rostc` behind the `mmap` feature.
 - `Template::query_list_iter` / `query_enum_iter` return an allocation-free `Items` iterator.
-- `ParseErrorKind::TooLarge` and `parser::MAX_DOCUMENT_LEN`.
+- `ParseErrorKind::TooLarge` and `parser::MAX_DOCUMENT_LEN`; `DeError::{new, message}`.
 
 ### Changed
-- `query_list`, `query_enum` and `query_field` use the path index: O(depth) instead of
-  rebuilding every block per call.
+- `query_list`, `query_enum`, `query_field` and `find_block` use the path index: O(depth) instead of
+  rebuilding every block per call. `find_block` copies only the fields of the block it finds.
+- Block-start records are 29 bytes (were 13): the lenient index executes 2.1% more instructions on a
+  block-heavy document.
+- The perf gate (`scripts/perf-gate.sh`) counts instructions under valgrind, threshold 3%.
+- **Breaking:** `DeError`'s field is no longer public (`DeError::new`, `DeError::message`). The error is
+  one pointer wide, which makes the typed loaders 6-8% faster in cycles on large documents.
 
 ### Fixed
 - Documents over 4 GiB were silently indexed with wrapped `u32` offsets; they are now rejected.
-- `scripts/perf-gate.sh` could run a stale `gate-*` binary.
+- `scripts/perf-gate.sh` could run a stale `gate-*` binary, and reported timing noise as regressions.
 
 ## 0.2.0-alpha.1 — 2026-11-01
 
