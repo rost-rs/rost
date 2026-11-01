@@ -134,3 +134,20 @@ fn borrowed_strings_and_the_serde_escape_hatch() {
 fn a_top_level_list_is_not_a_struct() {
     assert!(rost::load::<Config>("[1, 2]").is_err());
 }
+
+#[derive(Rost, Debug)]
+#[allow(dead_code)]
+struct Outer {
+    name: String,
+    window: Window,
+}
+
+#[test]
+fn load_errors_carry_the_line_and_column_of_the_entry() {
+    let src = "name: \"a\"\nwindow {\n  width: 1\n  height: nope\n  scale: 1.0\n  title: \"t\"\n}\n";
+    let err = rost::load::<Outer>(src).unwrap_err();
+    assert!(err.message().starts_with("4:3: "), "{}", err.message());
+
+    let err = rost::load::<Window>("width: wide\nscale: 1.0\ntitle: \"t\"\n").unwrap_err();
+    assert!(err.message().starts_with("1:1: "), "{}", err.message());
+}

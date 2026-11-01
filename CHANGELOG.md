@@ -3,7 +3,22 @@
 All notable changes per release checkpoint. Checkpoints are defined in
 [`SPRINTS.md`](SPRINTS.md#release-checkpoints). Versions below `1.0.0` may break the API.
 
-## Unreleased (Sprint 6)
+## Unreleased (Sprints 6-7)
+
+### Added (Sprint 7, feature `watch`)
+- `rost::Reloader<T>`: a typed value that follows its file. Lock-free `get()`, atomic swap,
+  the last good value stays when an edit is invalid (`last_error()`, `on_error`), `on_change`,
+  `on_change_path("window.width", …)`, `depends_on(file)`, `wait_for_version`. Entry points
+  `watch`, `watch_serde`, `watch_load` (`#[derive(Rost)]`), `builder`.
+- One shared dispatcher thread fed by `notify` file events, debounced (20 ms), with a stat poll
+  as safety net; editors that save by rename work; identical content is not reloaded.
+- `rost::diff::{diff, Change}`: structural diff between two `Value` trees, as dotted paths.
+- `examples/live_theme.rs`.
+
+### Fixed (Sprint 7)
+- Typed loaders (`rost::load`, `#[derive(Rost)]`) now report `line:column` on value errors
+  (`cannot parse 'height' as u32` had no position).
+
 
 ### Added
 - `rost::doc::{Doc, ValueRef}`: a borrowed document tree on a flat tape. `Doc::from_json`,

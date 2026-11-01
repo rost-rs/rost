@@ -97,6 +97,10 @@ pub mod query;
 pub mod rostc;
 pub mod schema;
 pub mod watcher;
+#[cfg(feature = "serde")]
+pub mod diff;
+#[cfg(feature = "watch")]
+pub mod reload;
 pub mod object;
 
 #[cfg(feature = "serde")]
@@ -113,6 +117,8 @@ pub use block::{Block, BlockFields, RootBlocks};
 pub use field::{Dimension, Items, ParsedField, QuoteStyle, Scalar};
 pub use malleable::{MalleablePatcher, RostBuilder};
 pub use query::{parse_blocks, BlockView, FieldIter};
+#[cfg(feature = "watch")]
+pub use reload::{ReloadError, Reloader, ReloaderBuilder};
 pub use watcher::{CentralWatcher, HotReloadWatcher, ReloadCallback};
 pub use object::RostObject;
 
