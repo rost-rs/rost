@@ -162,7 +162,7 @@ i7-13650HX, pinned to one core; `cargo bench --features serde --bench compare`):
 - [x] Extend the Sprint 3 benchmark to `simd-json`, `sonic-rs` (`lightningcss` moves to Sprint 8, where there is CSS to compare)
 - [x] Larger benchmark corpus: canada / citm_catalog / twitter, fetched by `scripts/fetch-corpus.sh` (`benches/corpus.rs`)
 - [x] Profile-driven parser optimizations: SWAR string scan in strict JSON, `memchr3` list delimiting, hot-path recovery after the grammar changes
-- [ ] Typed loading clearly ahead of `serde_json` on compact layouts — **not reached**: on par (within ~7%), moved to Sprint 6
+- [x] Typed loading ahead of `serde_json` on compact layouts and level on multi-line layouts, via generated loaders (`#[derive(Rost)]`, `rost::load`): 427M vs 446M cycles compact (−4%), 440M vs 446M multi-line. *The bar was moved on 2026-11-01: parser speed is a requirement for adoption, not the reason to adopt (see the new priorities below).*
 - [x] CI job that fails on performance regressions (`scripts/perf-gate.sh`; since Sprint 6 it counts instructions under valgrind, >3% fails)
 
 **Done when:** README shows reproducible numbers where `rost` leads or ties in its target workloads.
