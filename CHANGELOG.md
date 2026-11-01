@@ -3,6 +3,22 @@
 All notable changes per release checkpoint. Checkpoints are defined in
 [`SPRINTS.md`](SPRINTS.md#release-checkpoints). Versions below `1.0.0` may break the API.
 
+## Unreleased (Sprint 6)
+
+### Added
+- `.rostc` precompiled documents: `Template::{to_rostc, from_rostc, save_rostc, load_rostc}`
+  with a magic, a format version byte, a checksum and structural validation of untrusted files.
+- `Template::query_list_iter` / `query_enum_iter` return an allocation-free `Items` iterator.
+- `ParseErrorKind::TooLarge` and `parser::MAX_DOCUMENT_LEN`.
+
+### Changed
+- `query_list`, `query_enum` and `query_field` use the path index: O(depth) instead of
+  rebuilding every block per call.
+
+### Fixed
+- Documents over 4 GiB were silently indexed with wrapped `u32` offsets; they are now rejected.
+- `scripts/perf-gate.sh` could run a stale `gate-*` binary.
+
 ## 0.2.0-alpha.1 — 2026-11-01
 
 First downloadable checkpoint (Sprints 1–5). Tag: `v0.2.0-alpha.1`.

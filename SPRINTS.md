@@ -185,17 +185,19 @@ i7-13650HX, pinned to one core; `cargo bench --features serde --bench compare`):
 
 **Goal:** every lookup is O(1) or O(depth), with no rebuilding of views.
 
-- [ ] Typed loading clearly ahead of `serde_json` on compact layouts (carried over from Sprint 5)
-- [ ] Arena-backed `Value` (borrowed keys/strings) to close the gap with `sonic_rs::Value`
-- [ ] Block tree encoded in the bytecode (parent / first-child / next-sibling offsets)
-- [ ] Path index built during parsing for `find_block` (lazy `query_*` index lands in Sprint 3)
-- [ ] Allocation-free typed iterators for lists, enums and blocks
-- [ ] Key interning for repeated names
-- [ ] Bytecode format version byte for forward compatibility (moved from Sprint 2)
-- [ ] `.rostc` precompiled binary (versioned header, checksum), loadable via `mmap`
-- [ ] Document the 4 GiB `u32` offset limit or add `u64` offsets behind a feature
+- [ ] Typed loading clearly ahead of `serde_json` on compact layouts (carried over from Sprint 5; still on par → Sprint 7)
+- [ ] Arena-backed `Value` (borrowed keys/strings) to close the gap with `sonic_rs::Value` (→ Sprint 7)
+- [ ] Block tree encoded in the bytecode (parent / first-child / next-sibling offsets) (→ Sprint 7)
+- [ ] Path index built during parsing for `find_block` (`find_block` / `blocks()` still scan the document; the lazy index serves every `query_*`)
+- [x] Allocation-free typed iterators for lists and enums (`query_list_iter`, `query_enum_iter`; verified with a counting allocator)
+- [x] `query_list` / `query_enum` / `query_field` resolved through the path index (they rebuilt every block on each call)
+- [ ] Key interning for repeated names (dropped: the index stores hashes, not strings, so there is nothing to intern yet)
+- [x] Bytecode format version byte for forward compatibility (header of `.rostc`, unknown versions rejected)
+- [x] `.rostc` precompiled binary (versioned header, checksum, structural validation) — `mmap` loading not done: `Template` owns its buffers
+- [x] Document the 4 GiB `u32` offset limit, and reject larger documents instead of wrapping offsets (`u64` offsets behind a feature not done)
 
 **Done when:** `find_block` / `query_*` no longer allocate and scale independently of document size.
+*Status: met for list/enum/field queries (`list_queries_x100`: 43.6 ms → 22 µs on 5000 blocks); not met for `find_block`.*
 
 ## Sprint 7 — Rust ergonomics: derive and validation
 

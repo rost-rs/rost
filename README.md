@@ -241,6 +241,25 @@ let document = RostBuilder::new()
 assert!(document.contains("@theme \"cyberpunk\""));
 ```
 
+### 8. Precompiled Documents and Allocation-Free Queries
+
+```rust
+use rost::Template;
+
+let doc = Template::parse("#inventory { items [sword, \"magic shield\"] }")?;
+doc.save_rostc("inventory.rostc")?;                       // document + bytecode, versioned, checksummed
+
+let doc = Template::load_rostc("inventory.rostc")?;       // no parsing
+for item in doc.query_list_iter("inventory.items").unwrap() {
+    println!("{item}");                                   // borrowed from the document, no allocation
+}
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+A `.rostc` file is validated on load (magic, format version, checksum, UTF-8 and every
+offset of the bytecode), so a damaged or hostile file is an error, never a panic or an
+invalid `&str`. Documents over 4 GiB are rejected, since the bytecode uses `u32` offsets.
+
 ---
 
 ## Testing & Benchmarks
@@ -288,6 +307,7 @@ timings include copying the input, since it parses in place:
 | Validate 5.3 MB of JSON | **`rost::json::validate`** | 3.9 ms |
 | | `serde_json` / `sonic-rs` (`IgnoredAny`) | 3.3–3.5 ms / 5.3–5.5 ms |
 | Load a queryable document | **rost lenient index** / strict (validated) | 4.4–4.6 ms / 5.2–5.5 ms |
+| | **`Template::from_rostc`** (precompiled: checksum + validation, no parsing) | 3.7–3.8 ms |
 | | **`Template::from_json`** (strict JSON, validated + indexed) | 9.6–10.1 ms |
 | Lookup by dot path | **rost `query_raw_value`** (after one index build) | 40 ns |
 | | `serde_json` `Value` indexing (after the DOM build) | 60–67 ns |
