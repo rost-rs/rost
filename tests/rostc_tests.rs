@@ -81,3 +81,57 @@ fn files_roundtrip_through_disk() {
     assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
     std::fs::remove_file(&path).ok();
 }
+
+#[cfg(feature = "mmap")]
+mod mapped {
+    use super::*;
+
+    fn temp(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("rost-mmap-{name}-{}.rostc", std::process::id()))
+    }
+
+    #[test]
+    fn a_mapped_file_answers_like_a_parsed_document() {
+        let path = temp("query");
+        let parsed = Template::parse(DOC).unwrap();
+        parsed.save_rostc(&path).unwrap();
+        // SAFETY: the test owns the file and does not touch it while it is mapped.
+        let mapped = unsafe { Template::mmap_rostc(&path) }.unwrap();
+        assert_eq!(mapped.as_bytes(), parsed.as_bytes());
+        assert_eq!(mapped.bytecode(), parsed.bytecode());
+        assert_eq!(mapped.query_i64("window.width"), Some(800));
+        assert_eq!(mapped.query_list("window.tags").unwrap(), ["a", "b", "c"]);
+        assert_eq!(mapped.block("window").unwrap().children().count(), 1);
+        // A clone shares the map and stays valid after the original is dropped.
+        let clone = mapped.clone();
+        drop(mapped);
+        assert_eq!(clone.query_i64("window.inner.depth"), Some(2));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn patching_a_mapped_template_copies_it_and_leaves_the_file_alone() {
+        let path = temp("patch");
+        Template::parse(DOC).unwrap().save_rostc(&path).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        // SAFETY: as above.
+        let mut mapped = unsafe { Template::mmap_rostc(&path) }.unwrap();
+        assert!(mapped.patch_value("window.width", "801"));
+        assert!(mapped.patch_value("window.width", "90210"));
+        assert_eq!(mapped.query_i64("window.width"), Some(90210));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn a_damaged_file_is_not_mapped() {
+        let path = temp("bad");
+        let mut bytes = Template::parse(DOC).unwrap().to_rostc();
+        *bytes.last_mut().unwrap() ^= 1;
+        std::fs::write(&path, bytes).unwrap();
+        // SAFETY: as above.
+        let err = unsafe { Template::mmap_rostc(&path) }.unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        std::fs::remove_file(&path).ok();
+    }
+}

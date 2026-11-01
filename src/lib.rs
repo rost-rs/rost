@@ -83,6 +83,7 @@
 //! ```
 
 pub mod block;
+mod bytes;
 pub mod error;
 pub mod field;
 mod index;
@@ -139,9 +140,9 @@ pub struct Template {
     /// File path origin of the template, if loaded from filesystem.
     pub path: PathBuf,
     /// Raw unparsed byte content of the document. Always valid UTF-8.
-    pub(crate) data: Vec<u8>,
+    pub(crate) data: bytes::Bytes,
     /// Compact bytecode array storing tags and Little-Endian `u32` offsets into `data`.
-    pub(crate) fields: Vec<u8>,
+    pub(crate) fields: bytes::Bytes,
     /// Native zero-CPU filesystem watcher if hot-reloading was enabled.
     pub(crate) watcher: Option<Arc<HotReloadWatcher>>,
     /// Path index built on the first dot-path query; must be reset whenever `fields` changes.
@@ -173,8 +174,8 @@ impl Template {
         };
         Ok(Self {
             path: p.to_path_buf(),
-            data,
-            fields,
+            data: data.into(),
+            fields: fields.into(),
             watcher,
             index: OnceLock::new(),
         })
@@ -202,8 +203,8 @@ impl Template {
         let fields = parser::parse_into_bytecode(&data);
         Self {
             path: PathBuf::new(),
-            data,
-            fields,
+            data: data.into(),
+            fields: fields.into(),
             watcher: None,
             index: OnceLock::new(),
         }
@@ -235,8 +236,8 @@ impl Template {
         }
         Ok(Self {
             path: PathBuf::new(),
-            data: src.as_bytes().to_vec(),
-            fields,
+            data: src.as_bytes().to_vec().into(),
+            fields: fields.into(),
             watcher: None,
             index: OnceLock::new(),
         })
@@ -813,7 +814,7 @@ impl Template {
 
     /// Saves the current template buffer back to disk.
     pub fn save<P: AsRef<Path>>(&self, path: P) -> std::io::Result<()> {
-        fs::write(path, &self.data)
+        fs::write(path, &*self.data)
     }
 }
 

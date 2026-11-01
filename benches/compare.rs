@@ -309,6 +309,17 @@ fn main() {
         black_box(Template::from_rostc(black_box(&precompiled)).unwrap());
     });
     row(scan, "rost load .rostc (checksum + validation)", throughput(rost_src.len(), d));
+    #[cfg(feature = "mmap")]
+    {
+        let path = std::env::temp_dir().join(format!("rost-bench-{}.rostc", std::process::id()));
+        std::fs::write(&path, &precompiled).unwrap();
+        let d = median(15, || {
+            // SAFETY: the benchmark owns the file and leaves it alone while it is mapped.
+            black_box(unsafe { Template::mmap_rostc(black_box(&path)) }.unwrap());
+        });
+        row(scan, "rost mmap .rostc (checksum + validation, no copy)", throughput(rost_src.len(), d));
+        std::fs::remove_file(&path).ok();
+    }
     let d = median(15, || {
         black_box(serde_json::from_str::<serde::de::IgnoredAny>(black_box(&json_src)).unwrap());
     });

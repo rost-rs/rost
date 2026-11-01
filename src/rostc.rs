@@ -22,9 +22,12 @@
 //! A reader rejects any version it does not know, so the layout can evolve.
 
 use std::fmt;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
+#[cfg(feature = "mmap")]
+use crate::bytes::Bytes;
 use crate::Template;
 use crate::parser::{self, read_u32};
 
@@ -132,6 +135,37 @@ fn validate_bytecode(text: &str, fields: &[u8]) -> bool {
     true
 }
 
+/// Verifies a `.rostc` file and returns where its document and bytecode lie in `bytes`.
+fn decode(bytes: &[u8]) -> Result<(Range<usize>, Range<usize>), RostcError> {
+    let header = bytes.get(..HEADER_LEN).ok_or(RostcError::Truncated)?;
+    if header[..5] != MAGIC {
+        return Err(RostcError::BadMagic);
+    }
+    if header[5] != FORMAT_VERSION {
+        return Err(RostcError::UnsupportedVersion(header[5]));
+    }
+    let data_len = u64::from_le_bytes(header[8..16].try_into().unwrap());
+    let fields_len = u64::from_le_bytes(header[16..24].try_into().unwrap());
+    let stored = u64::from_le_bytes(header[24..32].try_into().unwrap());
+    let total = data_len
+        .checked_add(fields_len)
+        .and_then(|n| usize::try_from(n).ok())
+        .ok_or(RostcError::Truncated)?;
+    if bytes.len() - HEADER_LEN != total {
+        return Err(RostcError::Truncated);
+    }
+    let data = HEADER_LEN..HEADER_LEN + data_len as usize;
+    let fields = data.end..bytes.len();
+    if checksum(&[&header[..24], &bytes[data.clone()], &bytes[fields.clone()]]) != stored {
+        return Err(RostcError::BadChecksum);
+    }
+    let text = std::str::from_utf8(&bytes[data.clone()]).map_err(|_| RostcError::InvalidUtf8)?;
+    if !validate_bytecode(text, &bytes[fields.clone()]) {
+        return Err(RostcError::InvalidBytecode);
+    }
+    Ok((data, fields))
+}
+
 impl Template {
     /// Serializes this template, bytecode included, as a `.rostc` file.
     ///
@@ -165,36 +199,40 @@ impl Template {
     /// See [`RostcError`]: wrong magic or version, truncation, a checksum mismatch, or a
     /// structurally invalid document or bytecode.
     pub fn from_rostc(bytes: &[u8]) -> Result<Self, RostcError> {
-        let header = bytes.get(..HEADER_LEN).ok_or(RostcError::Truncated)?;
-        if header[..5] != MAGIC {
-            return Err(RostcError::BadMagic);
-        }
-        if header[5] != FORMAT_VERSION {
-            return Err(RostcError::UnsupportedVersion(header[5]));
-        }
-        let data_len = u64::from_le_bytes(header[8..16].try_into().unwrap());
-        let fields_len = u64::from_le_bytes(header[16..24].try_into().unwrap());
-        let stored = u64::from_le_bytes(header[24..32].try_into().unwrap());
-        let total = data_len
-            .checked_add(fields_len)
-            .and_then(|n| usize::try_from(n).ok())
-            .ok_or(RostcError::Truncated)?;
-        let payload = bytes[HEADER_LEN..]
-            .get(..total)
-            .filter(|p| p.len() == bytes.len() - HEADER_LEN)
-            .ok_or(RostcError::Truncated)?;
-        let (data, fields) = payload.split_at(data_len as usize);
-        if checksum(&[&header[..24], data, fields]) != stored {
-            return Err(RostcError::BadChecksum);
-        }
-        let text = std::str::from_utf8(data).map_err(|_| RostcError::InvalidUtf8)?;
-        if !validate_bytecode(text, fields) {
-            return Err(RostcError::InvalidBytecode);
-        }
+        let (data, fields) = decode(bytes)?;
         Ok(Self {
             path: PathBuf::new(),
-            data: data.to_vec(),
-            fields: fields.to_vec(),
+            data: bytes[data].to_vec().into(),
+            fields: bytes[fields].to_vec().into(),
+            watcher: None,
+            index: OnceLock::new(),
+        })
+    }
+
+    /// Maps a `.rostc` file into memory and uses it in place: nothing is copied or parsed,
+    /// and the pages are shared with every other process that maps the same file.
+    ///
+    /// The file is verified exactly like [`Template::from_rostc`] does. Patching the
+    /// template copies it to the heap first; the file is never written.
+    ///
+    /// # Safety
+    /// The file must not be modified or truncated while the template (or a clone of it) is
+    /// alive. That would change bytes that were validated as UTF-8 under the template's
+    /// feet, which is undefined behaviour.
+    ///
+    /// # Errors
+    /// I/O errors, and [`std::io::ErrorKind::InvalidData`] for a malformed file.
+    #[cfg(feature = "mmap")]
+    pub unsafe fn mmap_rostc<P: AsRef<Path>>(path: P) -> std::io::Result<Self> {
+        let path = path.as_ref();
+        let file = std::fs::File::open(path)?;
+        let map = std::sync::Arc::new(unsafe { memmap2::Mmap::map(&file)? });
+        let (data, fields) =
+            decode(&map).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        Ok(Self {
+            path: path.to_path_buf(),
+            data: Bytes::Mapped { map: map.clone(), start: data.start, len: data.len() },
+            fields: Bytes::Mapped { map, start: fields.start, len: fields.len() },
             watcher: None,
             index: OnceLock::new(),
         })
@@ -222,8 +260,8 @@ mod tests {
     /// Re-encodes `fields` for `data` with a valid checksum, as a hostile writer would.
     fn forge(data: &[u8], fields: &[u8]) -> Vec<u8> {
         let mut t = Template::parse_lenient("a: 1");
-        t.data = data.to_vec();
-        t.fields = fields.to_vec();
+        t.data = data.to_vec().into();
+        t.fields = fields.to_vec().into();
         t.to_rostc()
     }
 
@@ -231,7 +269,7 @@ mod tests {
     fn offsets_inside_a_character_are_rejected_despite_a_valid_checksum() {
         // "é" is two bytes; a property whose key slice ends in the middle of it.
         let doc = Template::parse_lenient("é: 1");
-        let mut fields = doc.fields.clone();
+        let mut fields = doc.fields.to_vec();
         fields[5..9].copy_from_slice(&1u32.to_le_bytes());
         let forged = forge(&doc.data, &fields);
         assert_eq!(Template::from_rostc(&forged).unwrap_err(), RostcError::InvalidBytecode);
@@ -240,7 +278,7 @@ mod tests {
     #[test]
     fn offsets_past_the_document_and_cut_records_are_rejected() {
         let doc = Template::parse_lenient("a: 1");
-        let mut fields = doc.fields.clone();
+        let mut fields = doc.fields.to_vec();
         fields[1..5].copy_from_slice(&100u32.to_le_bytes());
         assert_eq!(
             Template::from_rostc(&forge(&doc.data, &fields)).unwrap_err(),
@@ -272,7 +310,7 @@ mod tests {
             (parser::BLOCK_END, 1),               // an end that is not an end record
             (parser::BLOCK_NEXT_SIBLING, 9999),   // outside the bytecode
         ] {
-            let mut fields = doc.fields.clone();
+            let mut fields = doc.fields.to_vec();
             fields[link..link + 4].copy_from_slice(&target.to_le_bytes());
             assert_eq!(
                 Template::from_rostc(&forge(&doc.data, &fields)).unwrap_err(),

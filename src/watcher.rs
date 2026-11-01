@@ -88,8 +88,8 @@ impl CentralWatcher {
                 let fields = parser::parse_into_bytecode(&data);
                 Template {
                     path: path.clone(),
-                    data,
-                    fields,
+                    data: data.into(),
+                    fields: fields.into(),
                     watcher: None,
                     index: Default::default(),
                 }

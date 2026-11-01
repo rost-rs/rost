@@ -214,7 +214,7 @@ impl MalleablePatcher {
 
         if found_val_len == encoded.len() {
             // Fast in-place zero-copy rewrite:
-            template.data[found_val_offset..found_val_offset + found_val_len]
+            template.data.make_mut()[found_val_offset..found_val_offset + found_val_len]
                 .copy_from_slice(encoded.as_bytes());
             true
         } else {
@@ -225,8 +225,8 @@ impl MalleablePatcher {
             new_data.extend_from_slice(&template.data[found_val_offset + found_val_len..]);
 
             let new_fields = parse_into_bytecode(&new_data);
-            template.data = new_data;
-            template.fields = new_fields;
+            template.data = new_data.into();
+            template.fields = new_fields.into();
             template.index = Default::default();
             true
         }
