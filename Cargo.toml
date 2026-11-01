@@ -56,3 +56,27 @@ required-features = ["derive", "watch"]
 name = "gate"
 harness = false
 required-features = ["serde"]
+
+[[example]]
+name = "tutorial_1_load"
+required-features = ["derive"]
+
+[[example]]
+name = "tutorial_2_types"
+required-features = ["derive"]
+
+[[example]]
+name = "tutorial_3_validation"
+required-features = ["derive"]
+
+[[example]]
+name = "tutorial_4_overrides"
+required-features = ["derive"]
+
+[[example]]
+name = "tutorial_5_reload"
+required-features = ["derive","watch"]
+
+[[example]]
+name = "tutorial_6_schema"
+required-features = ["derive"]
