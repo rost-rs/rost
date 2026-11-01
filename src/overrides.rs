@@ -58,6 +58,12 @@ impl Overrides {
         self
     }
 
+    /// Adds the entries of `other` after this set's own (later entries win).
+    pub fn merge(mut self, other: Overrides) -> Self {
+        self.entries.extend(other.entries);
+        self
+    }
+
     /// Reads every `PREFIX_A__B=value` variable of the process environment.
     pub fn from_env(prefix: &str) -> Self {
         Self::from_pairs(prefix, std::env::vars())
@@ -145,6 +151,10 @@ impl Overrides {
         // (offset, order, replace_len, text): edits applied from the end of the file backwards.
         let mut edits: Vec<(usize, usize, usize, String)> = Vec::new();
         for (order, (path, raw)) in self.entries.iter().enumerate() {
+            // The last override of a path wins; the earlier ones must not edit the same span.
+            if self.entries[order + 1..].iter().any(|(p, _)| p == path) {
+                continue;
+            }
             let shown = || path.join(".");
             if let Some((_, span)) = found.iter().find(|(p, _)| p == path) {
                 match span {
@@ -287,6 +297,14 @@ mod tests {
         ];
         let o = Overrides::from_pairs("APP", pairs);
         assert_eq!(o, Overrides::new().set("debug", "true").set("window.width", "800"));
+    }
+
+    #[test]
+    fn merged_sets_apply_in_order() {
+        let merged = Overrides::new().set("a", "1").merge(Overrides::new().set("a", "2"));
+        assert_eq!(merged.patch("a: 0\n").unwrap().unwrap(), "a: 2\n");
+        // Also for a key that is not in the file yet: it is added once, with the last value.
+        assert_eq!(merged.patch("b: 0\n").unwrap().unwrap(), "b: 0\n\na: 2\n");
     }
 
     #[test]
