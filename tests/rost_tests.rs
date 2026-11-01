@@ -1199,3 +1199,50 @@ fn test_serde_lists_of_blocks_and_nested_lists() {
     let err = rost::from_str::<Doc>(&src.replace("pair [7, \"seven\"]", "pair [7, \"seven\" x]")).unwrap_err();
     assert_eq!(err.to_string(), "10:18: expected `,` or `]` after a list item");
 }
+
+#[cfg(feature = "serde")]
+#[test]
+fn test_serde_enums_of_every_shape() {
+    use serde::Deserialize;
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    enum Shape {
+        Empty,
+        Circle(f64),
+        Rect(u32, u32),
+        Poly { points: Vec<(i32, i32)>, closed: bool },
+    }
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct Doc {
+        a: Shape,
+        b: Shape,
+        c: Shape,
+        d: Shape,
+        e: Shape,
+        all: Vec<Shape>,
+        mode: Shape,
+    }
+
+    let src = "a: Empty\nb { Circle: 1.5 }\nc { Rect [3, 4] }\nd {\n    Poly {\n        points [[0, 0], [1, -1]]\n        closed: true\n    }\n}\ne: \"Empty\"\nall [Empty, { Circle: 2.0 }, { Rect [1, 2] }]\nmode | Empty, Circle |\n";
+    let expected = Doc {
+        a: Shape::Empty,
+        b: Shape::Circle(1.5),
+        c: Shape::Rect(3, 4),
+        d: Shape::Poly { points: vec![(0, 0), (1, -1)], closed: true },
+        e: Shape::Empty,
+        all: vec![Shape::Empty, Shape::Circle(2.0), Shape::Rect(1, 2)],
+        mode: Shape::Empty,
+    };
+    assert_eq!(rost::from_str::<Doc>(src).unwrap(), expected);
+    assert_eq!(rost::from_template::<Doc>(&Template::parse(src).unwrap()).unwrap(), expected);
+
+    // An enum at the root is a document with a single entry.
+    assert_eq!(rost::from_str::<Shape>("Rect [5, 6]\n").unwrap(), Shape::Rect(5, 6));
+    assert_eq!(rost::from_template::<Shape>(&Template::parse("Circle: 3\n").unwrap()).unwrap(), Shape::Circle(3.0));
+
+    let err = |src: &str| rost::from_str::<Doc>(src).unwrap_err().to_string();
+    assert!(err(&src.replace("b { Circle: 1.5 }", "b { Circle: 1.5, Empty: null }")).contains("single enum variant"));
+    assert!(err(&src.replace("b { Circle: 1.5 }", "b {}")).contains("empty block"));
+    assert!(err(&src.replace("a: Empty", "a: Hexagon")).contains("unknown variant `Hexagon`"));
+}

@@ -6,7 +6,7 @@
 
 use std::fmt;
 use serde::de::value::BorrowedStrDeserializer;
-use serde::de::{self, DeserializeSeed, Deserializer, MapAccess, Visitor};
+use serde::de::{self, DeserializeSeed, Deserializer, EnumAccess, IgnoredAny, MapAccess, VariantAccess, Visitor};
 
 use super::parser::*;
 use super::query::BlockView;
@@ -199,9 +199,106 @@ impl<'de> Deserializer<'de> for FieldDeserializer<'de> {
         visitor.visit_some(self)
     }
 
+    /// A scalar names a unit variant: `mode: Dark`.
+    #[inline]
+    fn deserialize_enum<V: Visitor<'de>>(
+        self,
+        _name: &'static str,
+        _variants: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, Self::Error> {
+        match self.text() {
+            Cow::Borrowed(s) => visitor.visit_enum(BorrowedStrDeserializer::new(s)),
+            Cow::Owned(s) => visitor.visit_enum(de::value::StringDeserializer::<DeError>::new(s)),
+        }
+    }
+
     serde::forward_to_deserialize_any! {
         char bytes byte_buf unit unit_struct newtype_struct seq tuple
-        tuple_struct map struct enum identifier ignored_any
+        tuple_struct map struct identifier ignored_any
+    }
+}
+
+// ==============================================================================
+// ENUMS WITH DATA
+// ==============================================================================
+
+/// An externally tagged enum read from a block with exactly one entry, shared by every
+/// block-like deserializer: `{ Variant: 5 }`, `{ Variant [1, 2] }`, `{ Variant { x: 1 } }`.
+pub(crate) struct MapEnum<M>(pub(crate) M);
+
+impl<'de, M: MapAccess<'de, Error = DeError>> MapEnum<M> {
+    /// Rejects any entry after the variant.
+    fn end(&mut self) -> Result<(), DeError> {
+        match self.0.next_key::<IgnoredAny>()? {
+            Some(_) => Err(DeError("expected a single enum variant in the block".into())),
+            None => Ok(()),
+        }
+    }
+}
+
+impl<'de, M: MapAccess<'de, Error = DeError>> EnumAccess<'de> for MapEnum<M> {
+    type Error = DeError;
+    type Variant = Self;
+
+    fn variant_seed<V: DeserializeSeed<'de>>(mut self, seed: V) -> Result<(V::Value, Self), DeError> {
+        match self.0.next_key_seed(seed)? {
+            Some(variant) => Ok((variant, self)),
+            None => Err(DeError("expected an enum variant, found an empty block".into())),
+        }
+    }
+}
+
+impl<'de, M: MapAccess<'de, Error = DeError>> VariantAccess<'de> for MapEnum<M> {
+    type Error = DeError;
+
+    fn unit_variant(mut self) -> Result<(), DeError> {
+        self.0.next_value::<IgnoredAny>()?;
+        self.end()
+    }
+
+    fn newtype_variant_seed<T: DeserializeSeed<'de>>(mut self, seed: T) -> Result<T::Value, DeError> {
+        let value = self.0.next_value_seed(seed)?;
+        self.end()?;
+        Ok(value)
+    }
+
+    fn tuple_variant<V: Visitor<'de>>(mut self, _len: usize, visitor: V) -> Result<V::Value, DeError> {
+        let value = self.0.next_value_seed(SeqHint(visitor))?;
+        self.end()?;
+        Ok(value)
+    }
+
+    fn struct_variant<V: Visitor<'de>>(
+        mut self,
+        _fields: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, DeError> {
+        let value = self.0.next_value_seed(MapHint(visitor))?;
+        self.end()?;
+        Ok(value)
+    }
+}
+
+/// Deserializes the next value as a sequence.
+struct SeqHint<V>(V);
+
+impl<'de, V: Visitor<'de>> DeserializeSeed<'de> for SeqHint<V> {
+    type Value = V::Value;
+
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<V::Value, D::Error> {
+        deserializer.deserialize_seq(self.0)
+    }
+}
+
+/// Deserializes the next value as a map.
+struct MapHint<V>(V);
+
+impl<'de, V: Visitor<'de>> DeserializeSeed<'de> for MapHint<V> {
+    type Value = V::Value;
+
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<V::Value, D::Error> {
+        deserializer.deserialize_map(self.0)
     }
 }
 
@@ -295,10 +392,19 @@ impl<'de, 's> Deserializer<'de> for TemplateStreamDeserializer<'de, 's> {
         })
     }
 
+    fn deserialize_enum<V: Visitor<'de>>(
+        self,
+        _name: &'static str,
+        _variants: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, Self::Error> {
+        visitor.visit_enum(MapEnum(BlockMapStreamAccess { stream: self.stream, current_entry: None }))
+    }
+
     serde::forward_to_deserialize_any! {
         bool i8 i16 i32 i64 u8 u16 u32 u64 f32 f64 char str string
         bytes byte_buf option unit unit_struct newtype_struct seq tuple
-        tuple_struct map struct enum identifier ignored_any
+        tuple_struct map struct identifier ignored_any
     }
 }
 
@@ -335,10 +441,24 @@ impl<'de, 's> Deserializer<'de> for BlockStreamDeserializer<'de, 's> {
         visitor.visit_unit()
     }
 
+    #[inline]
+    fn deserialize_option<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
+        visitor.visit_some(self)
+    }
+
+    fn deserialize_enum<V: Visitor<'de>>(
+        self,
+        _name: &'static str,
+        _variants: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, Self::Error> {
+        visitor.visit_enum(MapEnum(BlockMapStreamAccess { stream: self.stream, current_entry: None }))
+    }
+
     serde::forward_to_deserialize_any! {
         bool i8 i16 i32 i64 u8 u16 u32 u64 f32 f64 char str string
-        bytes byte_buf option unit unit_struct newtype_struct seq tuple
-        tuple_struct map struct enum identifier
+        bytes byte_buf unit unit_struct newtype_struct seq tuple
+        tuple_struct map struct identifier
     }
 }
 
@@ -443,10 +563,19 @@ impl<'de> Deserializer<'de> for BlockViewDeserializer<'de> {
         visitor.visit_map(self)
     }
 
+    fn deserialize_enum<V: Visitor<'de>>(
+        self,
+        _name: &'static str,
+        _variants: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, Self::Error> {
+        visitor.visit_enum(MapEnum(self))
+    }
+
     serde::forward_to_deserialize_any! {
         bool i8 i16 i32 i64 u8 u16 u32 u64 f32 f64 char str string
         bytes byte_buf option unit unit_struct newtype_struct seq tuple
-        tuple_struct map struct enum identifier ignored_any
+        tuple_struct map struct identifier ignored_any
     }
 }
 

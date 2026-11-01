@@ -14,7 +14,7 @@ use memchr::{memchr, memchr2};
 use serde::de::value::BorrowedStrDeserializer;
 use serde::de::{self, DeserializeSeed, Deserializer, IgnoredAny, MapAccess, SeqAccess, Visitor};
 
-use crate::de::{DeError, FieldDeserializer};
+use crate::de::{DeError, FieldDeserializer, MapEnum};
 use crate::field::QuoteStyle;
 use crate::parser::{find_list_end, find_unescaped_quote, find_value_end, trim_trailing_ws, IS_DELIM_OR_WS, RAW_QUOTE};
 
@@ -570,10 +570,19 @@ impl<'de> Deserializer<'de> for Root<'_, 'de> {
         Block { p: self.p, root: true }.deserialize_ignored_any(visitor)
     }
 
+    fn deserialize_enum<V: Visitor<'de>>(
+        self,
+        name: &'static str,
+        variants: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, DeError> {
+        Block { p: self.p, root: true }.deserialize_enum(name, variants, visitor)
+    }
+
     serde::forward_to_deserialize_any! {
         bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
         bytes byte_buf unit unit_struct newtype_struct seq tuple
-        tuple_struct map struct enum identifier
+        tuple_struct map struct identifier
     }
 }
 
@@ -604,10 +613,20 @@ impl<'de> Deserializer<'de> for Block<'_, 'de> {
         visitor.visit_unit()
     }
 
+    /// A block with one entry holds an enum variant with data.
+    fn deserialize_enum<V: Visitor<'de>>(
+        self,
+        _name: &'static str,
+        _variants: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, DeError> {
+        visitor.visit_enum(MapEnum(Entries { p: self.p, root: self.root, key: "", pending: None }))
+    }
+
     serde::forward_to_deserialize_any! {
         bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
         bytes byte_buf unit unit_struct newtype_struct seq tuple
-        tuple_struct map struct enum identifier
+        tuple_struct map struct identifier
     }
 }
 
@@ -787,6 +806,16 @@ impl<'de> Deserializer<'de> for Scalar<'_, 'de> {
     }
 
     #[inline]
+    fn deserialize_enum<V: Visitor<'de>>(
+        self,
+        name: &'static str,
+        variants: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, DeError> {
+        self.text()?.deserialize_enum(name, variants, visitor)
+    }
+
+    #[inline]
     fn deserialize_option<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, DeError> {
         if self.p.plain_word(b"null") {
             return visitor.visit_none();
@@ -801,6 +830,6 @@ impl<'de> Deserializer<'de> for Scalar<'_, 'de> {
 
     serde::forward_to_deserialize_any! {
         i128 u128 char bytes byte_buf unit unit_struct newtype_struct seq tuple
-        tuple_struct map struct enum identifier ignored_any
+        tuple_struct map struct identifier ignored_any
     }
 }
