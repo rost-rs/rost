@@ -309,7 +309,7 @@ fn main() {
     });
     row(scan, "serde_json validate (IgnoredAny)", throughput(json_src.len(), d));
     let d = median(15, || {
-        black_box(rost::json::validate(black_box(&json_src)).unwrap());
+        black_box(rost::json::validate(black_box(&json_src))).unwrap();
     });
     row(scan, "rost::json::validate (strict JSON)", throughput(json_src.len(), d));
     let d = median(15, || {

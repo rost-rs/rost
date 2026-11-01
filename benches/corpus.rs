@@ -57,7 +57,7 @@ fn main() {
         let t = rost::Template::from_json(src).unwrap();
         assert!(rost::from_template::<rost::Value>(&t).unwrap() == strict, "{name}: from_template differs");
 
-        let d = median(11, || black_box(rost::json::validate(black_box(src)).unwrap()));
+        let d = median(11, || black_box(rost::json::validate(black_box(src))).unwrap());
         row(name, "rost::json::validate", len, d);
         let d = median(11, || {
             black_box(serde_json::from_str::<serde::de::IgnoredAny>(black_box(src)).unwrap());
