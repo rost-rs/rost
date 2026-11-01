@@ -20,9 +20,11 @@ if ! grep -q 'name = "gate"' "$work/base/Cargo.toml"; then
     printf '\n[[bench]]\nname = "gate"\nharness = false\nrequired-features = ["serde"]\n' >>"$work/base/Cargo.toml"
 fi
 
+# Asks cargo for the exact executable: a glob over target/ can pick up a stale build.
 build() {
-    (cd "$1" && CARGO_TARGET_DIR="$1/target" cargo bench --features serde --bench gate --no-run -q 2>/dev/null)
-    find "$1/target/release/deps" -maxdepth 1 -type f -perm -u+x -name 'gate-*' | head -n 1
+    (cd "$1" && CARGO_TARGET_DIR="$1/target" cargo bench --features serde --bench gate --no-run \
+        --message-format=json 2>/dev/null) |
+        sed -n 's/.*"executable":"\([^"]*\/gate-[^"]*\)".*/\1/p' | tail -n 1
 }
 base_bin=$(build "$work/base")
 head_bin=$(build "$root")
